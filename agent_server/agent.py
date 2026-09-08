@@ -76,9 +76,15 @@ UC_FUNCTIONS_SCHEMA = os.environ.get("UC_FUNCTIONS_SCHEMA", "default")
 # GENIE_SPACE_IDS:
 #   Comma-separated list of Genie Space IDs. Each Genie space becomes a small
 #   toolset (ask a natural-language question, get back data/insights) backed
-#   by the tables that space was configured against. Leave unset/empty to
-#   skip wiring Genie entirely (e.g. while the space hasn't been created yet).
-GENIE_SPACE_IDS = [s.strip() for s in os.environ.get("GENIE_SPACE_IDS", "").split(",") if s.strip()]
+#   by the tables that space was configured against. Set to "unset" (the
+#   default) to skip wiring Genie entirely (e.g. while the space hasn't been
+#   created yet). NOTE: the literal sentinel "unset" is used instead of an
+#   empty string because Databricks Apps silently drops any config.env entry
+#   whose resolved value is "" (see databricks.yml).
+_genie_space_ids_raw = os.environ.get("GENIE_SPACE_IDS", "unset")
+GENIE_SPACE_IDS = (
+    [] if _genie_space_ids_raw == "unset" else [s.strip() for s in _genie_space_ids_raw.split(",") if s.strip()]
+)
 
 
 @tool
