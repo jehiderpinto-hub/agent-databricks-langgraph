@@ -59,7 +59,7 @@ async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
         tools=tools,
         model=ChatDatabricks(
             endpoint="databricks-claude-sonnet-5",
-            extra_params={"thinking": {"type": "disabled"}},
+            extra_params={"extra_body": {"thinking": {"type": "disabled"}}},
         ),
     )
 
