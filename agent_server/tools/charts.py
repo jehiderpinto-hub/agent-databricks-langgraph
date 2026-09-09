@@ -1,6 +1,6 @@
 """
-Visualization tool module for Databricks LangGraph Agent.
-Generates comprehensive visual charts and returns them as markdown-embedded images.
+Chart generation tool. Renders tabular data as PNG charts and returns a
+short markdown image link the model can copy verbatim into its reply.
 """
 
 import io
@@ -14,7 +14,6 @@ import matplotlib
 # Use non-interactive backend suitable for server environments
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 from langchain_core.tools import tool
@@ -52,6 +51,7 @@ def _cache_chart(png_bytes: bytes) -> str:
     while len(_CHART_CACHE) > _CHART_CACHE_MAX_SIZE:
         _CHART_CACHE.popitem(last=False)
     return chart_id
+
 
 # Predefined modern color palettes
 COLOR_PALETTES = {
@@ -126,7 +126,7 @@ def _generate_plot_image(
 ) -> bytes:
     """Generates the plot and returns the raw PNG bytes."""
     colors = COLOR_PALETTES.get(palette_name, COLOR_PALETTES["vibrant"])
-    
+
     # Adjust figure size dynamically based on data points
     num_items = len(df)
     fig_width = max(8, min(14, num_items * 0.8))
@@ -181,7 +181,7 @@ def _generate_plot_image(
     elif chart_type in ["horizontal_bar", "barh"]:
         y = np.arange(len(df))
         height = 0.8 / len(y_keys) if len(y_keys) > 1 else 0.55
-        
+
         for i, y_col in enumerate(y_keys):
             offset = (i - (len(y_keys) - 1) / 2) * height if len(y_keys) > 1 else 0
             color = colors[i % len(colors)]
@@ -256,7 +256,7 @@ def _generate_plot_image(
         val_col = y_keys[0]
         labels = [str(v) for v in df[x_key]]
         values = df[val_col]
-        
+
         wedgeprops = {"edgecolor": "white", "linewidth": 2}
         if chart_type == "donut":
             wedgeprops["width"] = 0.45  # Donut hole
@@ -308,7 +308,10 @@ def _generate_plot_image(
         _apply_style(ax, title, x_label or val_col, y_label or "Frecuencia")
 
     else:
-        raise ValueError(f"Unsupported chart_type '{chart_type}'. Supported types: bar, horizontal_bar, line, pie, donut, area, scatter, histogram")
+        raise ValueError(
+            f"Unsupported chart_type '{chart_type}'. Supported types: bar, horizontal_bar, "
+            "line, pie, donut, area, scatter, histogram"
+        )
 
     if len(y_keys) > 1 and chart_type not in ["pie", "donut", "histogram"]:
         ax.legend(frameon=False, fontsize=9)

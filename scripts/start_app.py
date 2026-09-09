@@ -169,6 +169,51 @@ class ProcessManager:
         shutil.rmtree("temp-app-templates", ignore_errors=True)
         return True
 
+    def patch_frontend_tool_call_panel(self):
+        """Hide the raw tool-call panel (Parameters/Result) from the chat UI.
+
+        By default, the vendored frontend renders every tool call as a
+        collapsible panel with raw JSON parameters and output -- this repo's
+        agent instructions (see agent_server/agent.py: AGENT_INSTRUCTIONS)
+        already keep the assistant's own text free of raw payloads, but the
+        tool-call panel itself is drawn unconditionally by the template,
+        regardless of what the agent says. The chat should show only
+        natural-language answers and rendered charts/tables.
+
+        The frontend is cloned fresh from an external repo (databricks/
+        app-templates) on every app start, so we can't fork/maintain a
+        modified copy of it -- instead this patches the single spot that
+        renders tool-call parts (`MessageToolGroup` in message.tsx) to render
+        nothing, right after cloning and before the npm build. Best-effort: if
+        the upstream template changes this function's layout, the anchor
+        string below won't match and we just leave the default UI (and print
+        a warning) rather than fail the build.
+        """
+        message_tsx = Path("e2e-chatbot-app-next/client/src/components/message.tsx")
+        if not message_tsx.exists():
+            return
+
+        marker = "agent-databricks-langgraph: tool-call panel hidden from chat UI"
+        text = message_tsx.read_text(encoding="utf-8")
+        if marker in text:
+            return  # already patched (e.g. re-running start-app without a fresh clone)
+
+        anchor = "const isMultiple = tools.length > 1;\n  return (\n    <div"
+        if anchor not in text:
+            print(
+                "WARNING: could not patch message.tsx to hide the tool-call panel "
+                "(template layout changed) -- leaving the default chat UI."
+            )
+            return
+
+        patched = text.replace(
+            anchor,
+            f"const isMultiple = tools.length > 1;\n  return null; // {marker}\n  return (\n    <div",
+            1,
+        )
+        message_tsx.write_text(patched, encoding="utf-8")
+        print("Patched message.tsx: tool-call panel hidden from chat UI.")
+
     def start_process(self, cmd, name, log_file, patterns, cwd=None):
         print(f"Starting {name}...")
         process = subprocess.Popen(
@@ -221,6 +266,7 @@ class ProcessManager:
             else:
                 # Set API_PROXY environment variable for frontend to connect to backend
                 os.environ["API_PROXY"] = f"http://localhost:{self.port}/invocations"
+                self.patch_frontend_tool_call_panel()
 
         # Open log files
         self.backend_log = open("backend.log", "w", buffering=1)

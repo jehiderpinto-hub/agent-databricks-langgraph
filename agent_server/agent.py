@@ -1,13 +1,11 @@
 import logging
 import os
-from datetime import datetime
 from typing import AsyncGenerator, Optional
 
 import mlflow
 from databricks.sdk import WorkspaceClient
 from databricks_langchain import ChatDatabricks, DatabricksMCPServer, DatabricksMultiServerMCPClient
 from langchain.agents import create_agent
-from langchain_core.tools import tool
 from mlflow.genai.agent_server import invoke, stream
 from mlflow.types.responses import (
     ResponsesAgentRequest,
@@ -16,13 +14,13 @@ from mlflow.types.responses import (
     to_chat_completions_input,
 )
 
+from agent_server.tools import ALL_LOCAL_TOOLS
 from agent_server.utils import (
     get_databricks_host_from_env,
     get_session_id,
     get_user_workspace_client,
     process_agent_astream_events,
 )
-from agent_server.visualization import generate_chart
 
 # ---------------------------------------------------------------------------
 # Agent Instructions / System Prompt
@@ -31,8 +29,8 @@ AGENT_INSTRUCTIONS = """Eres un asistente inteligente y analista de datos expert
 
 # REGLAS ESTRICTAS DE RESPUESTA Y FORMATO:
 1. **NUNCA muestres JSON crudo, payloads técnicos ni metadatos de ejecución en el chat:**
-   - Queda estrictamente prohibido responder con salidas directas como `{"query": "SHOW CATALOGS"} Result [{"type": "text", ...}]` o estructuras con `statement_id`, `status`, `manifest` o `data_array`.
-   - Procesa, limpia e interpreta internamente los resultados de todas las herramientas SQL, UC Functions y MCPs antes de responder.
+   - Queda estrictamente prohibido responder con salidas directas como `{"query": "SHOW CATALOGS"} Result [{"type": "text", ...}]` o estructuras con `statement_id`, `status`, `manifest`, `data_array`, `run_id`, `life_cycle_state` u otros campos técnicos crudos.
+   - Esto aplica a TODAS las herramientas (SQL, UC Functions, MCPs, Genie, Jobs, PDF, correo, etc.): siempre procesa, limpia e interpreta internamente sus resultados (incluyendo los dicts con `status`/`message` que devuelven las tools de Jobs, PDF y correo) antes de responder en lenguaje natural.
 
 2. **Presentación Clara y Profesional (en Español):**
    - Presenta los datos de forma legible usando tablas Markdown bien estructuradas, listas con viñetas o resúmenes ejecutivos.
@@ -43,6 +41,8 @@ AGENT_INSTRUCTIONS = """Eres un asistente inteligente y analista de datos expert
    - Selecciona el tipo de gráfica más adecuado (`bar`, `horizontal_bar`, `line`, `pie`, `donut`, `area`, `scatter`, `histogram`).
    - `generate_chart` devuelve una línea markdown como `![título](/invocations?chart_id=...)`. Debes incluir esa línea EXACTAMENTE como la devolvió la herramienta, sin modificarla, al inicio de tu respuesta -- de lo contrario la gráfica no se renderiza en el chat.
    - Acompaña siempre la gráfica generada con un breve análisis o conclusiones clave después de la línea de imagen.
+
+4. **Otras herramientas disponibles:** además de SQL/UC Functions/Genie (MCP) y `generate_chart`, tienes `genie_ask` (Genie por API directa), `send_email` (correo vía Logic App), `generate_pdf_to_volume` / `generate_pdf_from_genie` (reportes PDF a un volumen de Unity Catalog) y las tools `databricks_jobs_*` (listar, ejecutar, monitorear y cancelar Jobs). Úsalas cuando la solicitud del usuario lo requiera explícitamente (ej. "envíame esto por correo", "genera un PDF con esto", "ejecuta el job X"), y resume siempre su resultado en lenguaje natural.
 """
 
 # ---------------------------------------------------------------------------
@@ -107,11 +107,6 @@ _genie_space_ids_raw = os.environ.get("GENIE_SPACE_IDS", "unset")
 GENIE_SPACE_IDS = (
     [] if _genie_space_ids_raw == "unset" else [s.strip() for s in _genie_space_ids_raw.split(",") if s.strip()]
 )
-
-@tool
-def get_current_time() -> str:
-    """Get the current date and time."""
-    return datetime.now().isoformat()
 
 
 def init_mcp_client(workspace_client: WorkspaceClient) -> DatabricksMultiServerMCPClient:
@@ -190,7 +185,7 @@ async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
     Called once per request in `stream_handler` below (cheap: tool-fetching
     is the only I/O, the LLM client itself is stateless).
     """
-    tools = [get_current_time, generate_chart]
+    tools = list(ALL_LOCAL_TOOLS)
 
     ws_client = workspace_client or sp_workspace_client
     if ws_client is None:

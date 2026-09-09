@@ -190,6 +190,12 @@ logs
 node_modules
 bower_components
 
+# Cloned fresh by scripts/start_app.py on every local/deployed start -- never
+# part of the repo itself (see patch_frontend_tool_call_panel()).
+e2e-chatbot-app-next
+backend.log
+frontend.log
+
 *.sublime*
 
 psd

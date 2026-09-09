@@ -17,6 +17,17 @@ dependencies = [
     "langchain-mcp-adapters>=0.2.1",
     "python-dotenv>=1.2.1",
     "opentelemetry-exporter-otlp-proto-grpc>=1.25.0",
+    # Used directly by agent_server/tools/charts.py (generate_chart). Were
+    # previously undeclared transitive deps (pulled in indirectly by mlflow) --
+    # declared explicitly so they stay pinned regardless of mlflow's own deps.
+    "matplotlib>=3.9.0",
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    # Used directly by agent_server/tools/{mail,volumes}.py.
+    "requests>=2.31.0",
+    # Used by agent_server/tools/pdf.py (build_pdf_bytes); falls back to a
+    # dependency-free minimal PDF generator if unavailable.
+    "reportlab>=4.0.0",
 ]
 
 [build-system]
