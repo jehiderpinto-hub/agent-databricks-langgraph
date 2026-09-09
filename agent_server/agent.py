@@ -41,7 +41,8 @@ AGENT_INSTRUCTIONS = """Eres un asistente inteligente y analista de datos expert
 3. **Visualizaciones y Gráficas:**
    - Cuando el usuario solicite analizar tendencias, comparaciones, distribuciones, métricas o visualizaciones, o cuando una gráfica aporte claridad al análisis de datos numéricos o categóricos, utiliza SIEMPRE la herramienta `generate_chart`.
    - Selecciona el tipo de gráfica más adecuado (`bar`, `horizontal_bar`, `line`, `pie`, `donut`, `area`, `scatter`, `histogram`).
-   - Acompaña siempre la gráfica generada con un breve análisis o conclusiones clave.
+   - `generate_chart` devuelve una línea markdown como `![título](/invocations?chart_id=...)`. Debes incluir esa línea EXACTAMENTE como la devolvió la herramienta, sin modificarla, al inicio de tu respuesta -- de lo contrario la gráfica no se renderiza en el chat.
+   - Acompaña siempre la gráfica generada con un breve análisis o conclusiones clave después de la línea de imagen.
 """
 
 # ---------------------------------------------------------------------------

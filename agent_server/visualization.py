@@ -1,13 +1,14 @@
 """
 Visualization tool module for Databricks LangGraph Agent.
-Generates comprehensive visual charts rendered as base64 images and markdown summaries.
+Generates comprehensive visual charts and returns them as markdown-embedded images.
 """
 
-import base64
 import io
 import json
 import logging
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Union
+from uuid import uuid4
 
 import matplotlib
 # Use non-interactive backend suitable for server environments
@@ -19,6 +20,38 @@ import pandas as pd
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
+
+# In-memory cache of generated chart PNGs, served back to the browser via the
+# GET /invocations?chart_id=... route registered in start_server.py.
+#
+# Charts can't be embedded as data: URIs in the chat markdown: the frontend's
+# markdown renderer (Streamdown, via rehype-harden) blocks <img> sources that
+# aren't http(s) by default -- and that frontend is a vendored template we
+# don't control, re-cloned on every deploy, so we can't just change its
+# renderer config. The chat's only backend-reachable path is /invocations
+# (the frontend proxies exactly that path, and no other, to this server) --
+# see server/src/index.ts in databricks/app-templates' e2e-chatbot-app-next.
+# So charts are cached here by id and fetched by the browser as a normal
+# same-origin image request instead.
+#
+# Bounded LRU-ish cache (simple dict with insertion-order eviction) since this
+# is ephemeral per-session data, not something that needs to survive restarts.
+_CHART_CACHE: "OrderedDict[str, bytes]" = OrderedDict()
+_CHART_CACHE_MAX_SIZE = 50
+
+
+def get_cached_chart(chart_id: str) -> Optional[bytes]:
+    """Look up a previously generated chart PNG by id. Used by the /invocations
+    GET route in start_server.py to serve chart images back to the browser."""
+    return _CHART_CACHE.get(chart_id)
+
+
+def _cache_chart(png_bytes: bytes) -> str:
+    chart_id = uuid4().hex
+    _CHART_CACHE[chart_id] = png_bytes
+    while len(_CHART_CACHE) > _CHART_CACHE_MAX_SIZE:
+        _CHART_CACHE.popitem(last=False)
+    return chart_id
 
 # Predefined modern color palettes
 COLOR_PALETTES = {
@@ -90,8 +123,8 @@ def _generate_plot_image(
     y_label: str,
     palette_name: str = "vibrant",
     show_values: bool = True,
-) -> str:
-    """Generates the plot and returns a base64 encoded PNG data URI string."""
+) -> bytes:
+    """Generates the plot and returns the raw PNG bytes."""
     colors = COLOR_PALETTES.get(palette_name, COLOR_PALETTES["vibrant"])
     
     # Adjust figure size dynamically based on data points
@@ -282,14 +315,11 @@ def _generate_plot_image(
 
     plt.tight_layout()
 
-    # Save to buffer and base64 encode
+    # Save to buffer as PNG bytes
     buffer = io.BytesIO()
     plt.savefig(buffer, format="png", bbox_inches="tight", dpi=130)
     plt.close(fig)
-    buffer.seek(0)
-    
-    encoded_image = base64.b64encode(buffer.read()).decode("utf-8")
-    return f"data:image/png;base64,{encoded_image}"
+    return buffer.getvalue()
 
 
 @tool
@@ -305,8 +335,9 @@ def generate_chart(
     show_values: Optional[bool] = True,
 ) -> str:
     """Generates visual charts and graphs (bar, line, pie, donut, area, scatter, histogram)
-    from tabular data. Returns a markdown representation containing the rendered chart image
-    and a structured summary table.
+    from tabular data. Returns a short markdown snippet with an embedded chart image link
+    (![title](/invocations?chart_id=...)) -- include this markdown line verbatim, exactly as
+    returned, in your reply so the chart renders in the chat.
 
     Args:
         data: List of dicts or JSON string representing the dataset. Example: [{"category": "A", "sales": 120}, {"category": "B", "sales": 250}]
@@ -345,8 +376,7 @@ def generate_chart(
         for yk in y_keys:
             df[yk] = pd.to_numeric(df[yk], errors="coerce")
 
-        # Generate base64 plot image
-        data_uri = _generate_plot_image(
+        png_bytes = _generate_plot_image(
             df=df,
             chart_type=chart_type,
             x_key=x_key,
@@ -357,12 +387,15 @@ def generate_chart(
             palette_name=palette or "vibrant",
             show_values=show_values if show_values is not None else True,
         )
+        chart_id = _cache_chart(png_bytes)
+        image_url = f"/invocations?chart_id={chart_id}"
 
-        # Markdown representation with embedded image
+        # Markdown representation with embedded image. The image URL is short
+        # and stable, so the model can safely copy it verbatim into its reply.
         markdown_output = [
             f"### 📊 {title}",
             "",
-            f"![{title}]({data_uri})",
+            f"![{title}]({image_url})",
             "",
         ]
 
