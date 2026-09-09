@@ -232,11 +232,11 @@ Esto significa que **cada usuario solo ve/hace en el chat lo que ya podría ver/
      apps:
        agent_langgraph:
          user_api_scopes:
-           - sql            # execute_sql / execute_sql_read_only (MCP de SQL)
-           - genie          # MCP de Genie + genie_ask
-           - unity-catalog  # MCP de UC Functions
-           - files          # subida a volúmenes (generate_pdf_to_volume/_from_genie)
+           - sql    # execute_sql / execute_sql_read_only (MCP de SQL)
+           - genie  # MCP de Genie + genie_ask
+           - files  # subida a volúmenes (generate_pdf_to_volume/_from_genie)
    ```
+   > `unity-catalog` **no** es un scope válido de `user_api_scopes` (la API lo rechaza con `400 INVALID_PARAMETER_VALUE`) -- ese nombre corresponde a otra capa (el scope OAuth de un cliente MCP externo conectándose a un servidor MCP gestionado, no al token que Databricks Apps reenvía). No se identificó un scope de Apps dedicado para el MCP de UC Functions; con `main.default` sin funciones registradas aún, esto no está bloqueando hoy, pero verifícalo si registras funciones y el MCP de `uc-functions` no las lista con la identidad del usuario.
 2. **Aprobación de un admin del workspace** (*Public Preview*): la primera vez que despliegues con `user_api_scopes`, un admin debe aprobar los scopes solicitados desde **Databricks Apps → `agent-langgraph` → Authorization**. Hasta que se aprueben (o si el request no trae token de usuario reenviado, ej. corriendo `uv run start-app` en local sin pasar por Databricks Apps), esas tools caen automáticamente al Service Principal -- ver el `try/except` alrededor de `get_user_workspace_client()` en `stream_handler()`.
 3. **Permisos del Service Principal (fallback):** aunque el modo normal es on-behalf-of-user, sigue otorgando permisos al Service Principal para que el fallback funcione (y para las tools de Jobs, que siempre lo usan):
    ```yaml
@@ -257,12 +257,14 @@ Esto significa que **cada usuario solo ve/hace en el chat lo que ya podría ver/
                name: 'genie_space'
                space_id: '01f14fd31b731643881aa99b62170b4a'
                permission: 'CAN_RUN'
-           - name: 'pdf_target_volume'
-             uc_securable:
-               securable_full_name: 'slv_dev.star_generico.test_mcp'
-               securable_type: 'VOLUME'
-               permission: 'WRITE_VOLUME'
+           # Deshabilitado por ahora -- ver nota abajo.
+           # - name: 'pdf_target_volume'
+           #   uc_securable:
+           #     securable_full_name: 'slv_dev.star_generico.test_mcp'
+           #     securable_type: 'VOLUME'
+           #     permission: 'WRITE_VOLUME'
    ```
+   > El bloque `pdf_target_volume` está comentado en ambos `databricks.yml`: la identidad que corre `databricks bundle deploy` necesita `USE CATALOG`/`MANAGE` en `slv_dev` para que el bundle pueda otorgar el permiso, y actualmente no los tiene (`403 PERMISSION_DENIED` al desplegar). Sin ese fallback, `generate_pdf_to_volume`/`generate_pdf_from_genie` dependen de que el **usuario que consulta el chat** tenga `WRITE_VOLUME` en el volumen (on-behalf-of-user, que es el modo por defecto). Para habilitar también el fallback del Service Principal, pide a un admin de catálogo que ejecute `GRANT WRITE VOLUME ON VOLUME slv_dev.star_generico.test_mcp TO `<service-principal-id-de-la-app>`` y descomenta el bloque.
 
 ### Para volver a Service-Principal-siempre
 Si por algún motivo quieres desactivar on-behalf-of-user (ej. depurar sin depender de los scopes de un usuario), en `stream_handler()` de `agent_server/agent.py` cambia:
