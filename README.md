@@ -1,314 +1,259 @@
-# Responses API Agent
+# 🤖 Databricks LangGraph Agent con Soporte MCP y Visualizaciones
 
-This template defines a conversational agent app. The app comes with a built-in chat UI, but also exposes an API endpoint for invoking the agent so that you can serve your UI elsewhere (e.g. on your website or in a mobile app).
+Aplicación de agente conversacional inteligente para analítica de datos en **Databricks**, construida con **LangGraph**, **MLflow ResponsesAgent API**, integración con servidores **MCP (Model Context Protocol)** y un motor avanzado de **generación de visualizaciones y gráficas**.
 
-The agent in this template implements the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) interface. It ships with a sample `get_current_time` tool. The agent code includes commented-out examples showing how to connect to [Databricks MCP servers](https://docs.databricks.com/aws/en/generative-ai/agent-framework/agent-tool) (including the built-in code interpreter, Vector Search, Genie, and UC functions). You can customize agent code and test it via the API or UI.
+La aplicación incluye un servidor backend en FastAPI compatible con la especificación de OpenAI Responses API, una interfaz de chat web integrada (Next.js) y soporte para despliegue automatizado en **Databricks Apps** mediante **Databricks Asset Bundles (DABs)**.
 
-The agent input and output format are defined by MLflow's ResponsesAgent interface, which closely follows the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) interface. See [the MLflow docs](https://mlflow.org/docs/latest/genai/flavors/responses-agent-intro/) for input and output formats for streaming and non-streaming requests, tracing requirements, and other agent authoring details.
+---
 
-## Build with AI Assistance
+## 📐 Arquitectura del Sistema
 
-We recommend using AI coding assistants (Claude Code, Cursor, GitHub Copilot) to customize and deploy this template. Agent Skills in `.claude/skills/` provide step-by-step guidance for common tasks like setup, adding tools, and deployment. These skills are automatically detected by Claude, Cursor, and GitHub Copilot.
+```mermaid
+flowchart TD
+    User([👤 Usuario / Chat UI / API]) -->|SSE Streaming / REST| Server[⚡ FastAPI ResponsesAgent Server]
+    
+    subgraph App_Runtime [Entorno de la Aplicación]
+        Server -->|Traces| MLflow[📊 MLflow Tracing & Experiment]
+        Server -->|Mensajes + System Prompt| Agent[🧠 LangGraph ReAct Agent]
+        
+        subgraph Local_Tools [Herramientas Locales]
+            Agent --> TimeTool[⏰ get_current_time]
+            Agent --> ChartTool[📊 generate_chart Base64 PNG]
+        end
+    end
 
-## Quick start
+    subgraph Databricks_Platform [Plataforma Databricks / Unity Catalog]
+        Agent -->|DatabricksMultiServerMCPClient| MCP[🔌 Managed MCP Servers]
+        MCP --> UC_Funcs[📚 UC Functions - SQL UDFs]
+        MCP --> SQL_Wh[💾 SQL Warehouse MCP]
+        MCP --> SystemAI[🐍 system.ai.python_exec]
+        MCP --> Genie[✨ Genie Spaces]
+        Agent -->|ChatDatabricks| LLM[🧠 Model Serving Endpoint: Claude 3.5/3.7 Sonnet]
+    end
+```
 
-Run the `uv run quickstart` script to quickly set up your local environment and start the agent server. At any step, if there are issues, refer to the manual local development loop setup below.
+---
 
-This script will:
+## ✨ Características Principales
 
-1. Verify uv, nvm, and Databricks CLI installations
-2. Configure Databricks authentication
-3. Configure agent tracing, by creating and linking an MLflow experiment to your app
-4. Start the agent server and chat app
+1. **Respuestas Limpias y Estructuradas (Sin JSON Crudo):**
+   * El agente procesa internamente todas las salidas de Unity Catalog y SQL MCP.
+   * **Nunca muestra al usuario payloads técnicos** como `{"query": "SHOW CATALOGS"}`, `statement_id`, `manifest` o `data_array`.
+   * Formatea los datos en tablas Markdown elegantes, listas con viñetas y resúmenes ejecutivos en español.
 
+2. **Motor de Visualizaciones y Gráficas (`generate_chart`):**
+   * Permite renderizar gráficas visuales directamente en el chat en formato de imagen **Base64 PNG**.
+   * Soporta **8+ tipos de gráficos**:
+     * `bar` / `column`: Barras verticales simples o multi-serie.
+     * `horizontal_bar`: Barras horizontales (ideal para categorías o tablas con nombres largos).
+     * `line` / `trend`: Gráficas de líneas y series de tiempo.
+     * `pie` / `donut`: Gráficas de pastel y dona con cálculo automático de porcentajes.
+     * `area`: Gráficas de área sombreada.
+     * `scatter`: Gráficos de dispersión y correlación.
+     * `histogram`: Distribuciones de frecuencia.
+   * Paletas de color modernas: `vibrant`, `modern`, `ocean`, `emerald`, `sunset`, `purple`, `corporate`.
+
+3. **Integración con Servidores MCP de Databricks:**
+   * **`system-ai`**: Intérprete de código Python (`system.ai.python_exec`).
+   * **`uc-functions`**: Ejecución gobernada de UDFs y funciones SQL en Unity Catalog (`UC_FUNCTIONS_CATALOG.UC_FUNCTIONS_SCHEMA`).
+   * **`sql`**: Ejecución gobernada de consultas SQL contra un SQL Warehouse (`SQL_WAREHOUSE_ID`).
+   * **`genie`**: Consultas en lenguaje natural contra espacios Genie configurados (`GENIE_SPACE_IDS`).
+
+4. **Trazabilidad y Observabilidad:**
+   * Registro automático de spans, pasos del agente y llamadas a herramientas mediante **MLflow Autologging**.
+   * Agrupación por sesión de conversación (`session_id`).
+
+---
+
+## 📁 Estructura del Proyecto
+
+```
+agent-databricks-langgraph/
+├── agent_server/
+│   ├── __init__.py
+│   ├── agent.py               # Lógica del agente LangGraph, prompt del sistema y MCPs
+│   ├── evaluate_agent.py      # Script de evaluación con scorers de MLflow
+│   ├── start_server.py        # Servidor FastAPI ResponsesAgent con proxy de chat
+│   ├── utils.py               # Helpers de streaming, auth y sesiones
+│   └── visualization.py       # Motor de visualizaciones matplotlib -> base64
+├── scripts/
+│   ├── discover_tools.py      # Descubridor de recursos disponibles en el workspace
+│   ├── preflight.py           # Verificación previa al despliegue
+│   ├── quickstart.py          # Asistente interactivo de configuración inicial
+│   └── start_app.py           # Lanzador concurrente de backend y frontend
+├── .claude/skills/            # Habilidades y guías operativas para asistentes de IA
+├── databricks.yml             # Definición del Bundle DAB, recursos y permisos
+├── app.yaml                   # Configuración para Databricks Apps
+├── pyproject.toml             # Dependencias del proyecto (uv / pip)
+└── README.md                  # Documentación del proyecto
+```
+
+---
+
+## 🚀 Inicio Rápido (Quickstart)
+
+### 1. Requisitos Previos
+* **Python >= 3.11** y gestor de paquetes [`uv`](https://docs.astral.sh/uv/getting-started/installation/).
+* **Node.js 20 LTS** y `nvm`.
+* **Databricks CLI** (versión `0.298.0` o superior).
+
+### 2. Autenticación con Databricks CLI
+Inicia sesión en tu workspace de Databricks:
+```bash
+databricks auth login --host https://<tu-workspace>.databricks.com
+```
+
+### 3. Configuración Inicial Automatizada
+Ejecuta el asistente interactivo:
 ```bash
 uv run quickstart
 ```
+Este comando verificará tus herramientas, autenticación, creará el experimento en MLflow y configurará tu archivo `.env`.
 
-After the setup is complete, you can start the agent server and the chat app locally with:
+---
 
+## 💻 Desarrollo Local
+
+### Iniciar Frontend + Backend
+Para iniciar tanto el servidor del agente (puerto 8000) como la interfaz de chat web (puerto 3000):
 ```bash
 uv run start-app
 ```
+Abre tu navegador en [http://localhost:8000](http://localhost:8000) para interactuar con el agente.
 
-This will start the agent server and the chat app at http://localhost:8000.
+### Iniciar únicamente el Servidor Backend
+```bash
+uv run start-server --reload
+```
 
-**Next steps**: see [modifying your agent](#modifying-your-agent) to customize and iterate on the agent code.
+### Probar vía REST API (cURL)
+**Petición con Streaming (SSE):**
+```bash
+curl -X POST http://localhost:8000/invocations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": [{"role": "user", "content": "Muestra los catálogos disponibles y genera una gráfica con el número de tablas"}],
+    "stream": true
+  }'
+```
 
-## Manual local development loop setup
+---
 
-1. **Set up your local environment**
-   Install `uv` (python package manager), `nvm` (node version manager), and the Databricks CLI:
+## ⚙️ Configuración y Variables de Entorno
 
-   - [`uv` installation docs](https://docs.astral.sh/uv/getting-started/installation/)
-   - [`nvm` installation](https://github.com/nvm-sh/nvm?tab=readme-ov-file#installing-and-updating)
-     - Run the following to use Node 20 LTS:
-       ```bash
-       nvm use 20
-       ```
-   - [`databricks CLI` installation](https://docs.databricks.com/aws/en/dev-tools/cli/install)
+Crea o edita tu archivo `.env` en la raíz del proyecto:
 
-2. **Set up local authentication to Databricks**
+| Variable | Descripción | Valor por Defecto |
+| :--- | :--- | :--- |
+| `DATABRICKS_CONFIG_PROFILE` | Perfil de autenticación de Databricks CLI | `DEFAULT` |
+| `MLFLOW_EXPERIMENT_ID` | ID del experimento de MLflow para tracing | *(Requerido)* |
+| `UC_FUNCTIONS_CATALOG` | Catálogo de Unity Catalog para funciones SQL | `main` |
+| `UC_FUNCTIONS_SCHEMA` | Esquema de Unity Catalog para funciones SQL | `default` |
+| `SQL_WAREHOUSE_ID` | ID del SQL Warehouse para el MCP de SQL | `unset` |
+| `GENIE_SPACE_IDS` | IDs de espacios Genie separados por coma | `unset` |
+| `CHAT_APP_PORT` | Puerto de la interfaz web de chat | `3000` |
 
-   In order to access Databricks resources from your local machine while developing your agent, you need to authenticate with Databricks. Choose one of the following options:
+---
 
-   **Option 1: OAuth via Databricks CLI (Recommended)**
+## 📦 Despliegue en Databricks Apps (DABs)
 
-   Authenticate with Databricks using the CLI. See the [CLI OAuth documentation](https://docs.databricks.com/aws/en/dev-tools/cli/authentication#oauth-user-to-machine-u2m-authentication).
+El despliegue se gestiona de forma declarativa mediante **Databricks Asset Bundles (DABs)** con [databricks.yml](file:///c:/Users/jehider.pinto/Desktop/ARGOS/caso_uso/agent-databricks-langgraph/databricks.yml).
 
-   ```bash
-   databricks auth login
+### Flujo de Despliegue Paso a Paso:
+
+```bash
+# 1. Ejecutar prueba previa (pre-flight check)
+uv run preflight
+
+# 2. Validar la configuración del bundle
+databricks bundle validate
+
+# 3. Desplegar los archivos y recursos en Databricks
+databricks bundle deploy
+
+# 4. Iniciar o reiniciar la aplicación (¡OBLIGATORIO para aplicar cambios de código!)
+databricks bundle run agent_langgraph
+```
+
+> ⚠️ **IMPORTANTE:** `databricks bundle deploy` solo sube los archivos y actualiza recursos. Para que la aplicación se reinicie con el nuevo código, es indispensable ejecutar `databricks bundle run agent_langgraph`.
+
+---
+
+## 🔒 Gestión de Permisos y Service Principal
+
+Cuando la aplicación corre en **Databricks Apps**:
+
+1. **Identidad de la Aplicación:** Se ejecuta bajo la identidad de un **Service Principal** propio de la App.
+2. **Permisos en Unity Catalog:** El Service Principal debe tener permisos suficientes para ejecutar herramientas MCP:
+   * Permiso `CAN_USE` en el SQL Warehouse configurado.
+   * Permisos `USE CATALOG`, `USE SCHEMA` y `EXECUTE` en el catálogo/esquema de funciones.
+3. **Declaración en `databricks.yml`:**
+   ```yaml
+   resources:
+     apps:
+       agent_langgraph:
+         resources:
+           - name: 'experiment'
+             experiment:
+               experiment_id: "3871103648862313"
+               permission: 'CAN_MANAGE'
+           - name: 'sql_warehouse'
+             sql_warehouse:
+               id: '6fadc34945c1c177'
+               permission: 'CAN_USE'
    ```
 
-   Set the `DATABRICKS_CONFIG_PROFILE` environment variable in your .env file to the profile you used to authenticate:
+### Autenticación en nombre del usuario (On-Behalf-Of)
+Si deseas que el agente actúe con los permisos del usuario que realiza la consulta en lugar del Service Principal, activa `get_user_workspace_client()` en [agent.py](file:///c:/Users/jehider.pinto/Desktop/ARGOS/caso_uso/agent-databricks-langgraph/agent_server/agent.py):
 
-   ```bash
-   DATABRICKS_CONFIG_PROFILE="DEFAULT" # change to the profile name you chose
-   ```
+```python
+# En stream_handler:
+agent = await init_agent(workspace_client=get_user_workspace_client())
+```
 
-   **Option 2: Personal Access Token (PAT)**
+---
 
-   See the [PAT documentation](https://docs.databricks.com/aws/en/dev-tools/auth/pat#databricks-personal-access-tokens-for-workspace-users).
+## 🛠️ Herramienta de Visualización (`generate_chart`)
 
-   ```bash
-   # Add these to your .env file
-   DATABRICKS_HOST="https://host.databricks.com"
-   DATABRICKS_TOKEN="dapi_token"
-   ```
+La herramienta [agent_server/visualization.py](file:///c:/Users/jehider.pinto/Desktop/ARGOS/caso_uso/agent-databricks-langgraph/agent_server/visualization.py) permite graficar datos tabulares automáticamente:
 
-   See the [Databricks SDK authentication docs](https://docs.databricks.com/aws/en/dev-tools/sdk-python#authenticate-the-databricks-sdk-for-python-with-your-databricks-account-or-workspace).
+### Parámetros:
+* `data`: Lista de diccionarios o string JSON con los datos (ej. `[{"categoria": "A", "total": 100}, ...]`).
+* `chart_type`: Tipo de gráfico (`bar`, `horizontal_bar`, `line`, `pie`, `donut`, `area`, `scatter`, `histogram`).
+* `x_key`: Nombre de la columna para el eje X o categorías.
+* `y_keys`: Lista de nombres de columnas numéricas para el eje Y o valores.
+* `title`: Título descriptivo de la gráfica.
+* `palette`: Paleta de colores (`vibrant`, `modern`, `ocean`, `emerald`, `sunset`, `purple`, `corporate`).
+* `show_values`: Booleano para mostrar etiquetas de valor sobre los elementos (por defecto `True`).
 
-3. **Create and link an MLflow experiment to your app**
+---
 
-   Create an MLflow experiment to enable tracing and version tracking. This is automatically done by the `uv run quickstart` script.
+## ❓ Solución de Problemas Frecuentes (FAQ)
 
-   Create the MLflow experiment via the CLI:
+### 1. ¿Por qué el agente no tiene herramientas tras el despliegue?
+* Si alguna herramienta MCP falla por permisos (`403 Forbidden`) o recursos inexistentes, `init_agent()` captura el error para no caer la app, dejando solo las herramientas locales.
+* **Solución:** Revisa los logs de la app con `databricks apps logs agent-langgraph --follow` y verifica los permisos del Service Principal en Unity Catalog.
 
-   ```bash
-   DATABRICKS_USERNAME=$(databricks current-user me | jq -r .userName)
-   databricks experiments create-experiment /Users/$DATABRICKS_USERNAME/agents-on-apps
-   ```
+### 2. Error: "An app with the same name already exists"
+Si la app ya existía en Databricks, vincúlala al bundle:
+```bash
+databricks bundle deployment bind agent_langgraph <nombre-app> --auto-approve
+databricks bundle deploy
+databricks bundle run agent_langgraph
+```
 
-   Make a copy of `.env.example` to `.env` and update the `MLFLOW_EXPERIMENT_ID` in your `.env` file with the experiment ID you created. The `.env` file will be automatically loaded when starting the server.
+### 3. Error 302 al consultar la app desplegada
+Las Databricks Apps requieren autenticación **OAuth Bearer Token** (los tokens PAT no son compatibles):
+```bash
+databricks auth token
+```
 
-   ```bash
-   cp .env.example .env
-   # Edit .env and fill in your experiment ID
-   ```
+---
 
-   See the [MLflow experiments documentation](https://docs.databricks.com/aws/en/mlflow/experiments#create-experiment-from-the-workspace).
+## 🧪 Evaluación del Agente
 
-4. **Test your agent locally**
-
-   Start up the agent server and chat UI locally:
-
-   ```bash
-   uv run start-app
-   ```
-
-   Query your agent via the UI (http://localhost:8000) or REST API:
-
-   **Advanced server options:**
-
-   ```bash
-   uv run start-server --reload   # hot-reload the server on code changes
-   uv run start-server --port 8001 # change the port the server listens on
-   uv run start-server --workers 4 # run the server with multiple workers
-   ```
-
-   - Example streaming request:
-     ```bash
-     curl -X POST http://localhost:8000/invocations \
-     -H "Content-Type: application/json" \
-     -d '{ "input": [{ "role": "user", "content": "hi" }], "stream": true }'
-     ```
-   - Example non-streaming request:
-     ```bash
-     curl -X POST http://localhost:8000/invocations  \
-     -H "Content-Type: application/json" \
-     -d '{ "input": [{ "role": "user", "content": "hi" }] }'
-     ```
-
-## Modifying your agent
-
-See the [LangGraph documentation](https://docs.langchain.com/oss/python/langgraph/quickstart) for more information on how to edit your own agent.
-
-Required files for hosting with MLflow `AgentServer`:
-
-- `agent.py`: Contains your agent logic. Modify this file to create your custom agent. For example, you can [add agent tools](https://docs.databricks.com/aws/en/generative-ai/agent-framework/agent-tool) to give your agent additional capabilities
-- `start_server.py`: Initializes and runs the MLflow `AgentServer` with agent_type="ResponsesAgent". You don't have to modify this file for most common use cases, but can add additional server routes (e.g. a `/metrics` endpoint) here
-
-**Common customization questions:**
-
-**Q: Can I add additional files or folders to my agent?**
-Yes. Add additional files or folders as needed. Ensure the script within `pyproject.toml` runs the correct script that starts the server and sets up MLflow tracing.
-
-**Q: How do I add dependencies to my agent?**
-Run `uv add <package_name>` (e.g., `uv add "mlflow-skinny[databricks]"`). See the [python pyproject.toml guide](https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#dependencies-and-requirements).
-
-**Q: Can I add custom tracing beyond the built-in tracing?**
-Yes. This template uses MLflow's agent server, which comes with automatic tracing for agent logic decorated with `@invoke()` and `@stream()`. It also uses [MLflow autologging APIs](https://mlflow.org/docs/latest/genai/tracing/#one-line-auto-tracing-integrations) to capture traces from LLM invocations. However, you can add additional instrumentation to capture more granular trace information when your agent runs. See the [MLflow tracing documentation](https://docs.databricks.com/aws/en/mlflow3/genai/tracing/app-instrumentation/).
-
-**Q: How can I extend this example with additional tools and capabilities?**
-This template can be extended by integrating additional MCP servers, Vector Search Indexes, UC Functions, and other Databricks tools. See the ["Agent Framework Tools Documentation"](https://docs.databricks.com/aws/en/generative-ai/agent-framework/agent-tool).
-
-## Evaluating your agent
-
-Evaluate your agent by calling the invoke function you defined for the agent locally.
-
-- Update your `evaluate_agent.py` file with the preferred evaluation dataset and scorers.
-
-Run the evaluation using the evaluation script:
-
+Para evaluar la calidad de las respuestas y la precisión de las herramientas con datasets de prueba de MLflow:
 ```bash
 uv run agent-evaluate
 ```
-
-After it completes, open the MLflow UI link for your experiment to inspect results.
-
-## Deploying to Databricks Apps
-
-This template uses [Databricks Asset Bundles (DABs)](https://docs.databricks.com/aws/en/dev-tools/bundles/) for deployment. The `databricks.yml` file defines the app configuration and resource permissions.
-
-> **`app.yaml` vs `databricks.yml`**: `app.yaml` is used when deploying via `databricks apps deploy` (manual path). When deploying via DABs (`databricks bundle deploy`), the `config:` section in `databricks.yml` takes precedence. If you change environment variables or the start command, update `databricks.yml` — that's what DABs reads.
-
-Ensure you have the [Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/tutorial) installed and configured.
-
-1. **Run the pre-flight check**
-
-   Start the agent locally, send a test request, and verify the response to catch configuration and code errors early:
-
-   ```bash
-   uv run preflight
-   ```
-
-2. **Validate the bundle configuration**
-
-   Catch any configuration errors before deploying:
-
-   ```bash
-   databricks bundle validate
-   ```
-
-3. **Deploy the bundle**
-
-   This uploads your code and configures resources (MLflow experiment, serving endpoints, etc.) defined in `databricks.yml`:
-
-   ```bash
-   databricks bundle deploy
-   ```
-
-4. **Start or restart the app**
-
-   ```bash
-   databricks bundle run agent_langgraph
-   ```
-
-   > **Note:** `bundle deploy` only uploads files and configures resources. `bundle run` is **required** to actually start/restart the app with the new code.
-
-   To grant access to additional resources (serving endpoints, genie spaces, UC Functions, Vector Search), add them to `databricks.yml` and redeploy. See the [Databricks Apps resources documentation](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/resources).
-
-   **On-behalf-of (OBO) User Authentication**: Use `get_user_workspace_client()` from `agent_server.utils` to authenticate as the requesting user instead of the app service principal. See the [OBO authentication documentation](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/auth?language=Streamlit#retrieve-user-authorization-credentials).
-
-5. **Query your agent hosted on Databricks Apps**
-
-   You must use a Databricks OAuth token to query agents hosted on Databricks Apps. See [Query an agent](https://docs.databricks.com/aws/en/generative-ai/agent-framework/query-agent) for full details.
-
-   **Using the Databricks OpenAI client (Python):**
-
-   ```bash
-   uv pip install databricks-openai
-   ```
-
-   ```python
-   from databricks.sdk import WorkspaceClient
-   from databricks_openai import DatabricksOpenAI
-
-   w = WorkspaceClient()
-   client = DatabricksOpenAI(workspace_client=w)
-
-   # Non-streaming
-   response = client.responses.create(
-       model="apps/<app-name>",
-       input=[{"role": "user", "content": "hi"}],
-   )
-   print(response)
-
-   # Streaming
-   streaming_response = client.responses.create(
-       model="apps/<app-name>",
-       input=[{"role": "user", "content": "hi"}],
-       stream=True,
-   )
-   for chunk in streaming_response:
-       print(chunk)
-   ```
-
-   **Using curl:**
-
-   ```bash
-   # Generate an OAuth token
-   databricks auth login --host <https://host.databricks.com>
-   databricks auth token
-   ```
-
-   ```bash
-   # Streaming request
-   curl --request POST \
-     --url <app-url>.databricksapps.com/responses \
-     --header "Authorization: Bearer <oauth-token>" \
-     --header "Content-Type: application/json" \
-     --data '{
-       "input": [{ "role": "user", "content": "hi" }],
-       "stream": true
-     }'
-   ```
-
-   ```bash
-   # Non-streaming request
-   curl --request POST \
-     --url <app-url>.databricksapps.com/responses \
-     --header "Authorization: Bearer <oauth-token>" \
-     --header "Content-Type: application/json" \
-     --data '{
-       "input": [{ "role": "user", "content": "hi" }]
-     }'
-   ```
-
-For future updates, run `databricks bundle deploy` and `databricks bundle run agent_langgraph` to redeploy.
-
-### Common Issues
-
-- **`databricks bundle deploy` fails with "An app with the same name already exists"**
-
-  This happens when an app with the same name was previously created outside of DABs. To fix, bind the existing app to your bundle:
-
-  ```bash
-  # 1. Get the existing app's config (note the budget_policy_id if present)
-  databricks apps get <app-name> --output json | jq '{name, budget_policy_id, description}'
-
-  # 2. Update databricks.yml to include budget_policy_id if it was returned above
-
-  # 3. Bind the existing app to your bundle
-  databricks bundle deployment bind agent_langgraph <app-name> --auto-approve
-
-  # 4. Deploy
-  databricks bundle deploy
-  ```
-
-  Alternatively, delete the existing app and deploy fresh: `databricks apps delete <app-name>` (this permanently removes the app's URL and service principal).
-
-- **`databricks bundle deploy` fails with "Provider produced inconsistent result after apply"**
-
-  The existing app has server-side configuration (like `budget_policy_id`) that doesn't match your `databricks.yml`. Run `databricks apps get <app-name> --output json` and sync any missing fields to your `databricks.yml`.
-
-- **App is running old code after `databricks bundle deploy`**
-
-  `bundle deploy` only uploads files and configures resources. You must run `databricks bundle run agent_langgraph` to actually start/restart the app with the new code.
-
-### FAQ
-
-- For a streaming response, I see a 200 OK in the logs, but an error in the actual stream. What's going on?
-  - This is expected behavior. The initial 200 OK confirms stream setup; streaming errors don't affect this status.
-- When querying my agent, I get a 302 error. What's going on?
-  - Use an OAuth token. PATs are not supported for querying agents.
+Los resultados y métricas se registrarán directamente en tu experimento de MLflow en Databricks.

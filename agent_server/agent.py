@@ -22,6 +22,27 @@ from agent_server.utils import (
     get_user_workspace_client,
     process_agent_astream_events,
 )
+from agent_server.visualization import generate_chart
+
+# ---------------------------------------------------------------------------
+# Agent Instructions / System Prompt
+# ---------------------------------------------------------------------------
+AGENT_INSTRUCTIONS = """Eres un asistente inteligente y analista de datos experto en Databricks.
+
+# REGLAS ESTRICTAS DE RESPUESTA Y FORMATO:
+1. **NUNCA muestres JSON crudo, payloads técnicos ni metadatos de ejecución en el chat:**
+   - Queda estrictamente prohibido responder con salidas directas como `{"query": "SHOW CATALOGS"} Result [{"type": "text", ...}]` o estructuras con `statement_id`, `status`, `manifest` o `data_array`.
+   - Procesa, limpia e interpreta internamente los resultados de todas las herramientas SQL, UC Functions y MCPs antes de responder.
+
+2. **Presentación Clara y Profesional (en Español):**
+   - Presenta los datos de forma legible usando tablas Markdown bien estructuradas, listas con viñetas o resúmenes ejecutivos.
+   - Explica de forma concisa los hallazgos y el contexto de los datos solicitados.
+
+3. **Visualizaciones y Gráficas:**
+   - Cuando el usuario solicite analizar tendencias, comparaciones, distribuciones, métricas o visualizaciones, o cuando una gráfica aporte claridad al análisis de datos numéricos o categóricos, utiliza SIEMPRE la herramienta `generate_chart`.
+   - Selecciona el tipo de gráfica más adecuado (`bar`, `horizontal_bar`, `line`, `pie`, `donut`, `area`, `scatter`, `histogram`).
+   - Acompaña siempre la gráfica generada con un breve análisis o conclusiones clave.
+"""
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -54,10 +75,10 @@ logging.getLogger("mlflow.utils.autologging_utils").setLevel(logging.ERROR)
 # Whatever this identity can access in Unity Catalog is what UC Function /
 # Genie / Vector Search MCP tools will be able to read or execute -- grant
 # permissions to it via `resources:` entries in databricks.yml, NOT by
-# granting permissions to your own user.
-sp_workspace_client = WorkspaceClient()
-
-# ---------------------------------------------------------------------------
+try:
+    sp_workspace_client = WorkspaceClient()
+except Exception:
+    sp_workspace_client = None
 # Managed MCP resource configuration (env-driven, no hardcoded IDs)
 # ---------------------------------------------------------------------------
 # These env vars let you point the agent at different Unity Catalog
@@ -168,16 +189,21 @@ async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
     Called once per request in `stream_handler` below (cheap: tool-fetching
     is the only I/O, the LLM client itself is stateless).
     """
-    tools = [get_current_time]
+    tools = [get_current_time, generate_chart]
 
-    # Fetch Databricks-managed MCP tools (UC functions, Genie, system.ai).
-    # Wrapped in try/except so a transient MCP outage degrades the agent
-    # (fewer tools) instead of failing every request outright.
-    mcp_client = init_mcp_client(workspace_client or sp_workspace_client)
-    try:
-        tools.extend(await mcp_client.get_tools())
-    except Exception:
-        logger.warning("Failed to fetch MCP tools. Continuing without MCP tools.", exc_info=True)
+    ws_client = workspace_client or sp_workspace_client
+    if ws_client is None:
+        try:
+            ws_client = WorkspaceClient()
+        except Exception:
+            logger.warning("Could not initialize WorkspaceClient for MCP tools.", exc_info=True)
+
+    if ws_client:
+        mcp_client = init_mcp_client(ws_client)
+        try:
+            tools.extend(await mcp_client.get_tools())
+        except Exception:
+            logger.warning("Failed to fetch MCP tools. Continuing without MCP tools.", exc_info=True)
 
     return create_agent(
         tools=tools,
@@ -234,7 +260,9 @@ async def stream_handler(
     # see), swap in get_user_workspace_client():
     #   agent = await init_agent(workspace_client=get_user_workspace_client())
     agent = await init_agent()
-    messages = {"messages": to_chat_completions_input([i.model_dump() for i in request.input])}
+    user_messages = to_chat_completions_input([i.model_dump() for i in request.input])
+    # Prepend system instructions to establish persona, formatting rules, and visualization guidelines
+    messages = {"messages": [{"role": "system", "content": AGENT_INSTRUCTIONS}] + user_messages}
 
     async for event in process_agent_astream_events(
         agent.astream(input=messages, stream_mode=["updates", "messages"])
