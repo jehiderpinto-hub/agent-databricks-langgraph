@@ -1,5 +1,6 @@
 import logging
 from typing import Any, AsyncGenerator, AsyncIterator, Optional
+from uuid import uuid4
 
 from databricks.sdk import WorkspaceClient
 from databricks_langchain.chat_models import json
@@ -9,8 +10,15 @@ from mlflow.types.responses import (
     ResponsesAgentRequest,
     ResponsesAgentStreamEvent,
     create_text_delta,
+    create_text_output_item,
     output_to_responses_items_stream,
 )
+
+# Tools whose output must be rendered as markdown (e.g. embedded chart images)
+# rather than shown as raw text inside the collapsed tool-call panel. Their
+# ToolMessage content is injected directly as an assistant message item,
+# bypassing the LLM (which can't reliably reproduce a multi-KB base64 string).
+MARKDOWN_RENDERED_TOOLS = {"generate_chart"}
 
 
 def get_session_id(request: ResponsesAgentRequest) -> str | None:
@@ -51,6 +59,11 @@ async def process_agent_astream_events(
                     for msg in node_data["messages"]:
                         if isinstance(msg, ToolMessage) and not isinstance(msg.content, str):
                             msg.content = json.dumps(msg.content)
+                        if isinstance(msg, ToolMessage) and msg.name in MARKDOWN_RENDERED_TOOLS:
+                            markdown_item = create_text_output_item(text=msg.content, id=str(uuid4()))
+                            yield ResponsesAgentStreamEvent(
+                                type="response.output_item.done", item=markdown_item
+                            )
                     for item in output_to_responses_items_stream(node_data["messages"]):
                         yield item
         elif event[0] == "messages":
