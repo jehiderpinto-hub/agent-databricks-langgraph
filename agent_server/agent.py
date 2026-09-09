@@ -86,6 +86,11 @@ GENIE_SPACE_IDS = (
     [] if _genie_space_ids_raw == "unset" else [s.strip() for s in _genie_space_ids_raw.split(",") if s.strip()]
 )
 
+# SQL_WAREHOUSE_ID:
+#   ID of the SQL warehouse the SQL MCP server runs statements against. Set
+#   to "unset" (the default) to skip wiring the SQL MCP server entirely.
+SQL_WAREHOUSE_ID = os.environ.get("SQL_WAREHOUSE_ID", "unset")
+
 
 @tool
 def get_current_time() -> str:
@@ -129,6 +134,18 @@ def init_mcp_client(workspace_client: WorkspaceClient) -> DatabricksMultiServerM
             handle_tool_error=True,
         ),
     ]
+
+    # --- SQL MCP server (run governed SQL statements against a warehouse) ---
+    # Skipped entirely if SQL_WAREHOUSE_ID is "unset".
+    if SQL_WAREHOUSE_ID != "unset":
+        mcp_servers.append(
+            DatabricksMCPServer(
+                name="sql",
+                url=f"{host_name}/api/2.0/mcp/sql/{SQL_WAREHOUSE_ID}",
+                workspace_client=workspace_client,
+                handle_tool_error=True,
+            )
+        )
 
     # --- Genie Spaces (natural-language SQL over curated tables) ---
     # One MCP server per Genie space -- lets the agent delegate a
