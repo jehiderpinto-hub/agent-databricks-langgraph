@@ -20,6 +20,8 @@ from datetime import timedelta
 from databricks.sdk import WorkspaceClient
 from langchain_core.tools import tool
 
+from agent_server.utils import get_user_workspace_client
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 120
@@ -178,7 +180,10 @@ def genie_ask(
         (list of {query, description, table_markdown}).
     """
     try:
-        w = WorkspaceClient()
+        # On-behalf-of-user: the calling user must have CAN_RUN on this Genie
+        # space themselves -- see the on-behalf-of-user note in agent.py's
+        # stream_handler. Requires "genie" in the app's user_api_scopes.
+        w = get_user_workspace_client()
         answer = ask_genie(
             w,
             space_id=space_id,

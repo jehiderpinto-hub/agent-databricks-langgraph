@@ -249,13 +249,24 @@ async def stream_handler(
     if session_id := get_session_id(request):
         mlflow.update_current_trace(metadata={"mlflow.trace.session": session_id})
 
-    # By default, uses service principal credentials for every downstream
-    # call (MCP tools, model serving). For on-behalf-of-user authentication
-    # instead (the agent acts with the *calling user's* permissions, e.g. so
-    # UC Function / Genie access is scoped to what that specific user can
-    # see), swap in get_user_workspace_client():
-    #   agent = await init_agent(workspace_client=get_user_workspace_client())
-    agent = await init_agent()
+    # On-behalf-of-user auth: every MCP call (UC Functions, SQL, Genie) and
+    # every local tool that touches Unity Catalog (agent_server/tools/genie.py,
+    # pdf.py) runs with the *calling user's* permissions, not the app's
+    # service principal -- so a user only ever sees/does what they're
+    # already allowed to in Unity Catalog. Requires:
+    #   1. `user_api_scopes` declared on the app resource in databricks.yml
+    #      (sql, genie, unity-catalog, files).
+    #   2. A workspace admin approving the app's requested OAuth scopes the
+    #      first time (Databricks Apps -> app -> Authorization).
+    # Falls back to the service principal (sp_workspace_client) if the
+    # request carries no forwarded user token (e.g. local `uv run start-app`
+    # without going through Databricks Apps) -- see init_agent().
+    try:
+        user_client = get_user_workspace_client()
+    except Exception:
+        logger.warning("Could not build on-behalf-of-user WorkspaceClient; falling back to service principal.")
+        user_client = None
+    agent = await init_agent(workspace_client=user_client)
     user_messages = to_chat_completions_input([i.model_dump() for i in request.input])
     # Prepend system instructions to establish persona, formatting rules, and visualization guidelines
     messages = {"messages": [{"role": "system", "content": AGENT_INSTRUCTIONS}] + user_messages}

@@ -6,6 +6,14 @@ Ported from template_databricks_assest_bundle_mcp
 Pure helper functions take the WorkspaceClient as an explicit argument (never
 instantiate it internally), so the tools below decide which identity runs --
 currently always the app's service principal (see each @tool).
+
+Unlike agent_server/tools/genie.py and pdf.py, these stay on the service
+principal rather than on-behalf-of-user: Job permissions are workspace-level
+ACLs, not Unity Catalog grants, and Databricks Apps' documented
+`user_api_scopes` don't include a Jobs API scope as of this writing. Grant
+the service principal permission on whichever job(s) it should be able to
+run/monitor/cancel directly on the job (Job permissions in the workspace),
+not via databricks.yml.
 """
 
 import logging

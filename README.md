@@ -58,7 +58,7 @@ flowchart TD
    * Soporta **8 tipos de gráficos**: `bar`/`column`, `horizontal_bar`, `line`/`trend`, `pie`/`donut`, `area`, `scatter`, `histogram`.
    * Paletas de color modernas: `vibrant`, `modern`, `ocean`, `emerald`, `sunset`, `purple`, `corporate`.
 
-3. **Integración con Servidores MCP de Databricks (gobernados, service principal):**
+3. **Integración con Servidores MCP de Databricks (gobernados, on-behalf-of-user por defecto -- ver [Gestión de Permisos](#-gestión-de-permisos-on-behalf-of-user-por-defecto-y-service-principal-fallback)):**
    * **`system-ai`**: Intérprete de código Python (`system.ai.python_exec`).
    * **`uc-functions`**: Ejecución gobernada de UDFs y funciones SQL en Unity Catalog (`UC_FUNCTIONS_CATALOG.UC_FUNCTIONS_SCHEMA`).
    * **`sql`**: `execute_sql` / `execute_sql_read_only` / `poll_sql_result` contra Unity Catalog (requiere que el service principal tenga `CAN_USE` en al menos un SQL Warehouse -- ver recurso `sql_warehouse` en `databricks.yml`; la URL del MCP no toma un warehouse_id).
@@ -174,7 +174,7 @@ Crea o edita tu archivo `.env` en la raíz del proyecto:
 | `UC_FUNCTIONS_CATALOG` | Catálogo de Unity Catalog para funciones SQL | `main` |
 | `UC_FUNCTIONS_SCHEMA` | Esquema de Unity Catalog para funciones SQL | `default` |
 | `GENIE_SPACE_IDS` | IDs de espacios Genie (separados por coma) expuestos vía MCP | `unset` |
-| `PDF_TARGET_VOLUME` | Volumen UC por defecto (`/Volumes/cat/sch/vol`) para `generate_pdf_to_volume`/`generate_pdf_from_genie` | `unset` |
+| `PDF_TARGET_VOLUME` | Volumen UC por defecto (`/Volumes/cat/sch/vol`) para `generate_pdf_to_volume`/`generate_pdf_from_genie` | `/Volumes/slv_dev/star_generico/test_mcp` |
 | `LOGIC_APP_MAIL_URL` | URL del trigger HTTP de la Logic App para `send_email` (trátala como secreto) | *(sin configurar)* |
 | `LOGIC_APP_MAIL_TIMEOUT_SECONDS` | Timeout de la llamada HTTP a la Logic App | `30` |
 | `CHAT_APP_PORT` | Puerto de la interfaz web de chat | `3000` |
@@ -207,18 +207,38 @@ databricks bundle run agent_langgraph
 
 ---
 
-## 🔒 Gestión de Permisos y Service Principal
+## 🔒 Gestión de Permisos: On-Behalf-Of-User (por defecto) y Service Principal (fallback)
 
-Cuando la aplicación corre en **Databricks Apps**:
+Cuando la aplicación corre en **Databricks Apps**, cada request llega con dos identidades disponibles:
 
-1. **Identidad de la Aplicación:** Se ejecuta bajo la identidad de un **Service Principal** propio de la App.
-2. **Permisos en Unity Catalog:** El Service Principal debe tener permisos suficientes para ejecutar herramientas MCP y las tools locales que uses:
-   * Permiso `CAN_USE` en el SQL Warehouse configurado (para el MCP de SQL).
-   * Permisos `USE CATALOG`, `USE SCHEMA` y `EXECUTE` en el catálogo/esquema de funciones (MCP de UC Functions).
-   * Permiso `CAN_RUN` en cada Genie Space listado en `GENIE_SPACE_IDS`.
-   * Permiso `WRITE_VOLUME` en el volumen configurado en `PDF_TARGET_VOLUME`, si usas las tools de PDF.
-   * Permisos sobre el/los Job(s) concretos, si usas las tools `databricks_jobs_*` (esto se otorga directamente en el Job, no vía `databricks.yml`).
-3. **Declaración en `databricks.yml`:**
+* **El usuario que consulta el chat**, vía el header `x-forwarded-access-token` que Databricks Apps reenvía en cada request (`get_user_workspace_client()` en `agent_server/utils.py`).
+* **El Service Principal** propio de la App (`WorkspaceClient()` sin argumentos, `sp_workspace_client` en `agent_server/agent.py`).
+
+**Por defecto, este agente usa la identidad del usuario (on-behalf-of-user)** para todo lo que toca Unity Catalog:
+
+* Los tres servidores MCP gestionados (`uc-functions`, `sql`, `genie`) -- ver `stream_handler()` en `agent_server/agent.py`.
+* `genie_ask` (`agent_server/tools/genie.py`).
+* `generate_pdf_to_volume` / `generate_pdf_from_genie` (`agent_server/tools/pdf.py`) -- tanto la pregunta a Genie como la subida al volumen.
+
+Esto significa que **cada usuario solo ve/hace en el chat lo que ya podría ver/hacer directamente en Unity Catalog** -- el agente no amplía sus permisos.
+
+**Las tools `databricks_jobs_*` son la excepción:** siguen corriendo con el Service Principal, porque los permisos de Job son ACLs de workspace (no de Unity Catalog) y, a la fecha, `user_api_scopes` de Databricks Apps no incluye un scope para la API de Jobs. Otorga permiso sobre el/los Job(s) concretos directamente al Service Principal de la app (permisos de Job en el workspace, no vía `databricks.yml`).
+
+### Configuración requerida
+
+1. **`user_api_scopes` en `databricks.yml`** (a nivel del recurso de la app, no dentro de `config.env`) -- ya declarado en este repo y en el bundle real:
+   ```yaml
+   resources:
+     apps:
+       agent_langgraph:
+         user_api_scopes:
+           - sql            # execute_sql / execute_sql_read_only (MCP de SQL)
+           - genie          # MCP de Genie + genie_ask
+           - unity-catalog  # MCP de UC Functions
+           - files          # subida a volúmenes (generate_pdf_to_volume/_from_genie)
+   ```
+2. **Aprobación de un admin del workspace** (*Public Preview*): la primera vez que despliegues con `user_api_scopes`, un admin debe aprobar los scopes solicitados desde **Databricks Apps → `agent-langgraph` → Authorization**. Hasta que se aprueben (o si el request no trae token de usuario reenviado, ej. corriendo `uv run start-app` en local sin pasar por Databricks Apps), esas tools caen automáticamente al Service Principal -- ver el `try/except` alrededor de `get_user_workspace_client()` en `stream_handler()`.
+3. **Permisos del Service Principal (fallback):** aunque el modo normal es on-behalf-of-user, sigue otorgando permisos al Service Principal para que el fallback funcione (y para las tools de Jobs, que siempre lo usan):
    ```yaml
    resources:
      apps:
@@ -237,21 +257,23 @@ Cuando la aplicación corre en **Databricks Apps**:
                name: 'genie_space'
                space_id: '01f14fd31b731643881aa99b62170b4a'
                permission: 'CAN_RUN'
-           # Descomentar al configurar PDF_TARGET_VOLUME con un volumen real:
-           # - name: 'pdf_target_volume'
-           #   uc_securable:
-           #     securable_full_name: '<catalog>.<schema>.<volume>'
-           #     securable_type: 'VOLUME'
-           #     permission: 'WRITE_VOLUME'
+           - name: 'pdf_target_volume'
+             uc_securable:
+               securable_full_name: 'slv_dev.star_generico.test_mcp'
+               securable_type: 'VOLUME'
+               permission: 'WRITE_VOLUME'
    ```
 
-### Autenticación en nombre del usuario (On-Behalf-Of)
-Si deseas que el agente actúe con los permisos del usuario que realiza la consulta en lugar del Service Principal, activa `get_user_workspace_client()` en [agent.py](file:///c:/Users/jehider.pinto/Desktop/ARGOS/caso_uso/agent-databricks-langgraph/agent_server/agent.py):
-
+### Para volver a Service-Principal-siempre
+Si por algún motivo quieres desactivar on-behalf-of-user (ej. depurar sin depender de los scopes de un usuario), en `stream_handler()` de `agent_server/agent.py` cambia:
 ```python
-# En stream_handler:
-agent = await init_agent(workspace_client=get_user_workspace_client())
+agent = await init_agent(workspace_client=user_client)
 ```
+por:
+```python
+agent = await init_agent()  # usa sp_workspace_client (Service Principal) siempre
+```
+y, si quieres que `genie_ask`/`generate_pdf_*` hagan lo mismo, cambia `get_user_workspace_client()` por `WorkspaceClient()` en `agent_server/tools/genie.py` y `pdf.py`.
 
 ---
 
@@ -301,10 +323,10 @@ Portadas como *agent code tools* (ver `AGENTS.md` → "Agent Code Tools") desde 
 | :--- | :--- | :--- | :--- |
 | `current_time.py` | `get_current_time` | — | — |
 | `charts.py` | `generate_chart` | — (sin llamadas a Databricks) | — |
-| `genie.py` | `genie_ask` | Service principal (`WorkspaceClient()`) | Ninguno (recibe `space_id` por llamada) |
-| `pdf.py` | `generate_pdf_to_volume`, `generate_pdf_from_genie` | Service principal | `PDF_TARGET_VOLUME` + permiso `WRITE_VOLUME` |
+| `genie.py` | `genie_ask` | Usuario (on-behalf-of, fallback a Service Principal) | Scope `genie` en `user_api_scopes` |
+| `pdf.py` | `generate_pdf_to_volume`, `generate_pdf_from_genie` | Usuario (on-behalf-of, fallback a Service Principal) | `PDF_TARGET_VOLUME` + scope `files` en `user_api_scopes` + permiso `WRITE_VOLUME` (SP, fallback) |
 | `mail.py` | `send_email` | — (HTTP directo a la Logic App) | `LOGIC_APP_MAIL_URL` (secreto) |
-| `jobs.py` | `databricks_jobs_list_jobs`, `databricks_jobs_run_job`, `databricks_jobs_get_run_status`, `databricks_jobs_run_job_and_wait`, `databricks_jobs_cancel_run` | Service principal | Permiso sobre el/los job(s) concretos (fuera del bundle, vía permisos de Job en UC/Workspace) |
+| `jobs.py` | `databricks_jobs_list_jobs`, `databricks_jobs_run_job`, `databricks_jobs_get_run_status`, `databricks_jobs_run_job_and_wait`, `databricks_jobs_cancel_run` | Siempre Service Principal (sin OBO -- ver [Gestión de Permisos](#-gestión-de-permisos-on-behalf-of-user-por-defecto-y-service-principal-fallback)) | Permiso sobre el/los job(s) concretos (fuera del bundle, vía permisos de Job en UC/Workspace) |
 | `common.py` | `health`, `get_current_user` | `get_current_user` usa el usuario (on-behalf-of, vía `x-forwarded-access-token`) | — |
 | `volumes.py` | *(sin tools; helpers usados por `pdf.py`)* | — | — |
 
@@ -337,7 +359,10 @@ databricks auth token
 ### 4. `send_email` / `generate_pdf_to_volume` devuelven un error de configuración
 Es el comportamiento esperado hasta que configures `LOGIC_APP_MAIL_URL` (correo) o `PDF_TARGET_VOLUME` + permiso `WRITE_VOLUME` (PDF). Ver [Herramientas Locales](#-herramientas-locales-agent_servertools) y el docstring de `agent_server/tools/mail.py` para la guía de configuración de la Logic App.
 
-### 5. Las gráficas se ven como texto crudo `![...](data:image/...)` en el chat
+### 5. El agente usa permisos del Service Principal en vez de los del usuario
+Comportamiento esperado si aún no se aprobó la autorización de la app: on-behalf-of-user (ver [Gestión de Permisos](#-gestión-de-permisos-on-behalf-of-user-por-defecto-y-service-principal-fallback)) requiere que un admin del workspace apruebe los `user_api_scopes` solicitados una vez, en **Databricks Apps → `agent-langgraph` → Authorization**. Hasta entonces, `get_user_workspace_client()` no tiene un token de usuario válido y las tools caen al Service Principal automáticamente (sin fallar).
+
+### 6. Las gráficas se ven como texto crudo `![...](data:image/...)` en el chat
 Si ves el markdown de la imagen literal en vez de la imagen renderizada, `generate_chart` está devolviendo una `data:` URI en vez de la URL `/invocations?chart_id=...` esperada -- probablemente estás corriendo una versión anterior del código. Verifica que `agent_server/tools/charts.py` devuelva `f"/invocations?chart_id={chart_id}"` y no un data URI (ver [detalle técnico](#-herramienta-de-visualización-generate_chart)).
 
 ---

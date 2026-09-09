@@ -10,10 +10,10 @@ import os
 from datetime import datetime
 from xml.sax.saxutils import escape as _xml_escape
 
-from databricks.sdk import WorkspaceClient
 from langchain_core.tools import tool
 
 from agent_server.tools import genie, volumes
+from agent_server.utils import get_user_workspace_client
 
 logger = logging.getLogger(__name__)
 
@@ -247,11 +247,10 @@ def generate_pdf_to_volume(
 
         pdf_bytes = build_pdf_bytes(title=title, content=content, author=author)
 
-        # Uploaded with the app's service-principal identity, not the calling
-        # user's: writing to a volume is a system operation, and the forwarded
-        # user token only carries whatever scope the app declares in
-        # user_api_scopes (needs account-admin approval to widen).
-        w = WorkspaceClient()
+        # On-behalf-of-user: the calling user must have WRITE_VOLUME on the
+        # target volume themselves -- see the on-behalf-of-user note in
+        # agent.py's stream_handler. Requires "files" in user_api_scopes.
+        w = get_user_workspace_client()
         volumes.upload_bytes_to_volume(w, target_path, pdf_bytes, overwrite)
 
         return {
@@ -329,7 +328,10 @@ def generate_pdf_from_genie(
         }
 
     try:
-        w = WorkspaceClient()
+        # On-behalf-of-user for both the Genie question (needs "genie" in
+        # user_api_scopes) and the volume upload (needs "files") -- see the
+        # on-behalf-of-user note in agent.py's stream_handler.
+        w = get_user_workspace_client()
 
         genie_answer = genie.ask_genie(
             w,
