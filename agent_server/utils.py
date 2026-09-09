@@ -60,9 +60,22 @@ async def process_agent_astream_events(
                         if isinstance(msg, ToolMessage) and not isinstance(msg.content, str):
                             msg.content = json.dumps(msg.content)
                         if isinstance(msg, ToolMessage) and msg.name in MARKDOWN_RENDERED_TOOLS:
-                            markdown_item = create_text_output_item(text=msg.content, id=str(uuid4()))
+                            item_id = str(uuid4())
+                            # Register the item first (empty content) so the client
+                            # initializes it as a text part before it sees the "done"
+                            # event -- without this, a "done"-only item with no prior
+                            # delta/added event isn't reliably recognized as renderable
+                            # markdown text by the frontend's streaming parser.
                             yield ResponsesAgentStreamEvent(
-                                type="response.output_item.done", item=markdown_item
+                                type="response.output_item.added",
+                                item=create_text_output_item(text="", id=item_id),
+                            )
+                            yield ResponsesAgentStreamEvent(
+                                **create_text_delta(delta=msg.content, item_id=item_id)
+                            )
+                            yield ResponsesAgentStreamEvent(
+                                type="response.output_item.done",
+                                item=create_text_output_item(text=msg.content, id=item_id),
                             )
                     for item in output_to_responses_items_stream(node_data["messages"]):
                         yield item
