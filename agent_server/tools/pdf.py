@@ -272,8 +272,8 @@ def generate_pdf_to_volume(
 
 @tool
 def generate_pdf_from_genie(
-    space_id: str,
     question: str,
+    space_id: str = "",
     conversation_id: str = "",
     title: str = "",
     author: str = "",
@@ -289,11 +289,11 @@ def generate_pdf_from_genie(
     """Asks a Genie Space a question, builds a PDF from the answer (text + result tables),
     and saves it to a Unity Catalog volume.
 
-    Combines genie_ask (agent_server/tools/genie.py) with PDF generation and
+    Combines ask_genie (agent_server/tools/genie.py) with PDF generation and
     volume upload, without exposing the caller to each layer's details.
 
     Args:
-        space_id: Genie Space identifier (required).
+        space_id: Genie Space identifier. If omitted, uses DEFAULT_GENIE_SPACE_ID.
         question: Natural-language question for Genie (required).
         conversation_id: If given, continues an existing conversation instead of starting a new one.
         title: PDF title. Defaults to the question if omitted.
@@ -310,11 +310,11 @@ def generate_pdf_from_genie(
     Returns:
         dict with status, volume_path, conversation_id, message_id and message.
     """
-    if not space_id.strip() or not question.strip():
+    if not question.strip():
         return {
             "status": "error",
             "error": "Missing parameters",
-            "message": "You must provide 'space_id' and 'question'.",
+            "message": "You must provide 'question'.",
         }
     if PDF_TARGET_VOLUME == "unset" and not any([target_volume, volume_path, catalog and uc_schema and volume]):
         return {
@@ -335,7 +335,7 @@ def generate_pdf_from_genie(
 
         genie_answer = genie.ask_genie(
             w,
-            space_id=space_id,
+            space_id=genie.resolve_space_id(space_id),
             question=question,
             conversation_id=conversation_id,
             timeout_seconds=timeout_seconds,

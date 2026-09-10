@@ -20,9 +20,8 @@ flowchart TD
         subgraph Local_Tools [Herramientas locales -- agent_server/tools/]
             Agent --> TimeTool[⏰ current_time.get_current_time]
             Agent --> ChartTool[📊 charts.generate_chart]
-            Agent --> GenieCodeTool[✨ genie.genie_ask]
             Agent --> PdfTools[📄 pdf.generate_pdf_to_volume / generate_pdf_from_genie]
-            Agent --> MailTool[✉️ mail.send_email]
+            Agent --> MailJobTool[✉️ jobs.send_email_via_job]
             Agent --> JobsTools[⚙️ jobs.databricks_jobs_*]
             Agent --> CommonTools[🩺 common.health / get_current_user]
             ChartTool -.->|cachea PNG, devuelve URL corta| ChartCache
@@ -37,9 +36,8 @@ flowchart TD
         MCP --> Genie[✨ Genie Spaces MCP]
         PdfTools -->|Files API| Volumes[🗂️ Unity Catalog Volumes]
         JobsTools -->|Jobs API| Jobs[📋 Databricks Jobs]
-        GenieCodeTool -->|Genie Conversations API| Genie
-        MailTool -->|HTTP POST| LogicApp[☁️ Azure Logic App]
-        Agent -->|ChatDatabricks| LLM[🧠 Model Serving Endpoint: Claude Sonnet]
+        MailJobTool -->|Jobs API| Jobs
+        Agent -->|ChatDatabricks| LLM[🧠 Model Serving Endpoint: Claude Haiku]
     end
 ```
 
@@ -55,6 +53,7 @@ flowchart TD
 
 2. **Motor de Visualizaciones y Gráficas (`generate_chart`):**
    * Renderiza gráficas con matplotlib y las sirve como imagen PNG real vía HTTP (no como `data:` URI embebido -- el frontend bloquea imágenes `data:` por defecto; ver [detalle técnico](#-herramienta-de-visualización-generate_chart) más abajo).
+   * El agente solo debe llamarla cuando el usuario pida explícitamente una visualización o gráfica.
    * Soporta **8 tipos de gráficos**: `bar`/`column`, `horizontal_bar`, `line`/`trend`, `pie`/`donut`, `area`, `scatter`, `histogram`.
    * Paletas de color modernas: `vibrant`, `modern`, `ocean`, `emerald`, `sunset`, `purple`, `corporate`.
 
@@ -62,12 +61,11 @@ flowchart TD
    * **`system-ai`**: Intérprete de código Python (`system.ai.python_exec`).
    * **`uc-functions`**: Ejecución gobernada de UDFs y funciones SQL en Unity Catalog (`UC_FUNCTIONS_CATALOG.UC_FUNCTIONS_SCHEMA`).
    * **`sql`**: `execute_sql` / `execute_sql_read_only` / `poll_sql_result` contra Unity Catalog (requiere que el service principal tenga `CAN_USE` en al menos un SQL Warehouse -- ver recurso `sql_warehouse` en `databricks.yml`; la URL del MCP no toma un warehouse_id).
-   * **`genie`**: Un servidor MCP por cada ID en `GENIE_SPACE_IDS` -- consultas en lenguaje natural contra los espacios Genie configurados.
+   * **`genie`**: Un servidor MCP por cada ID en `GENIE_SPACE_IDS` -- consultas en lenguaje natural contra los espacios Genie configurados. El espacio por defecto de este proyecto es `01f14fd31b731643881aa99b62170b4a`.
 
 4. **Herramientas de código locales (`agent_server/tools/`) -- portadas de un servidor MCP propio:**
-   * **`genie_ask`**: consumo directo de la API de conversaciones de Genie (alternativa/complemento al MCP de Genie, con control explícito de `conversation_id`/`timeout`).
    * **`generate_pdf_to_volume`** / **`generate_pdf_from_genie`**: genera un reporte PDF (texto + tablas) y lo guarda en un volumen de Unity Catalog; la segunda variante toma el contenido directamente de una respuesta de Genie.
-   * **`send_email`**: envía correo vía una Azure Logic App (deshabilitada hasta configurar `LOGIC_APP_MAIL_URL`).
+   * **`send_email_via_job`**: envía correo ejecutando el Job de Databricks `1043398432719286` con un `email_payload`.
    * **`databricks_jobs_list_jobs` / `run_job` / `get_run_status` / `run_job_and_wait` / `cancel_run`**: ejecución y monitoreo de Jobs de Databricks vía la Jobs API.
    * **`health`** / **`get_current_user`**: utilidades de diagnóstico e identidad.
    * Ver [Herramientas Locales (`agent_server/tools/`)](#-herramientas-locales-agent_servertools) para el detalle módulo por módulo.
@@ -92,9 +90,9 @@ agent-databricks-langgraph/
 │       ├── __init__.py         # ALL_LOCAL_TOOLS -- lista agregada que consume agent.py
 │       ├── current_time.py      # get_current_time
 │       ├── charts.py            # generate_chart + cache de PNGs en memoria (get_cached_chart)
-│       ├── genie.py              # ask_genie (helpers puros) + tool genie_ask
+│       ├── genie.py              # ask_genie (helpers puros) + resolución del Genie Space por defecto
 │       ├── jobs.py               # Databricks Jobs: helpers puros + tools databricks_jobs_*
-│       ├── mail.py               # Envío de correo vía Azure Logic App + tool send_email
+│       ├── mail.py               # Implementación anterior de correo (ya no expuesta como tool)
 │       ├── pdf.py                 # Generación de PDF + tools generate_pdf_to_volume/_from_genie
 │       ├── volumes.py             # Helpers genéricos de subida a UC Volumes (usado por pdf.py)
 │       └── common.py              # health, get_current_user
@@ -171,12 +169,14 @@ Crea o edita tu archivo `.env` en la raíz del proyecto:
 | :--- | :--- | :--- |
 | `DATABRICKS_CONFIG_PROFILE` | Perfil de autenticación de Databricks CLI | `DEFAULT` |
 | `MLFLOW_EXPERIMENT_ID` | ID del experimento de MLflow para tracing | *(Requerido)* |
+| `MODEL_ENDPOINT` | Nombre o URL del serving endpoint del modelo principal | `.../serving-endpoints/databricks-claude-haiku-4-5/invocations` |
+| `MODEL_MAX_TOKENS` | Límite de tokens de salida para controlar costo por respuesta | `800` |
 | `UC_FUNCTIONS_CATALOG` | Catálogo de Unity Catalog para funciones SQL | `main` |
 | `UC_FUNCTIONS_SCHEMA` | Esquema de Unity Catalog para funciones SQL | `default` |
+| `DEFAULT_GENIE_SPACE_ID` | Genie Space asumido por defecto por el agente y por `generate_pdf_from_genie` | `01f14fd31b731643881aa99b62170b4a` |
 | `GENIE_SPACE_IDS` | IDs de espacios Genie (separados por coma) expuestos vía MCP | `unset` |
 | `PDF_TARGET_VOLUME` | Volumen UC por defecto (`/Volumes/cat/sch/vol`) para `generate_pdf_to_volume`/`generate_pdf_from_genie` | `/Volumes/slv_dev/star_generico/test_mcp` |
-| `LOGIC_APP_MAIL_URL` | URL del trigger HTTP de la Logic App para `send_email` (trátala como secreto) | *(sin configurar)* |
-| `LOGIC_APP_MAIL_TIMEOUT_SECONDS` | Timeout de la llamada HTTP a la Logic App | `30` |
+| `EMAIL_DELIVERY_JOB_ID` | Job fijo que recibe `email_payload` para enviar correos | `1043398432719286` |
 | `CHAT_APP_PORT` | Puerto de la interfaz web de chat | `3000` |
 
 > El MCP de SQL (`execute_sql`/`execute_sql_read_only`) no toma un `SQL_WAREHOUSE_ID` por variable de entorno -- su URL (`/api/2.0/mcp/sql`) no incluye un warehouse; Databricks resuelve el warehouse a partir de los permisos del caller. El recurso `sql_warehouse` en `databricks.yml` solo otorga `CAN_USE` al service principal de la app.
@@ -217,7 +217,6 @@ Cuando la aplicación corre en **Databricks Apps**, cada request llega con dos i
 **Por defecto, este agente usa la identidad del usuario (on-behalf-of-user)** para todo lo que toca Unity Catalog:
 
 * Los tres servidores MCP gestionados (`uc-functions`, `sql`, `genie`) -- ver `stream_handler()` en `agent_server/agent.py`.
-* `genie_ask` (`agent_server/tools/genie.py`).
 * `generate_pdf_to_volume` / `generate_pdf_from_genie` (`agent_server/tools/pdf.py`) -- tanto la pregunta a Genie como la subida al volumen.
 
 Esto significa que **cada usuario solo ve/hace en el chat lo que ya podría ver/hacer directamente en Unity Catalog** -- el agente no amplía sus permisos.
@@ -233,7 +232,7 @@ Esto significa que **cada usuario solo ve/hace en el chat lo que ya podría ver/
        agent_langgraph:
          user_api_scopes:
            - sql    # execute_sql / execute_sql_read_only (MCP de SQL)
-           - genie  # MCP de Genie + genie_ask
+           - genie  # MCP de Genie y helpers internos de PDF
            - files  # subida a volúmenes (generate_pdf_to_volume/_from_genie)
    ```
    > `unity-catalog` **no** es un scope válido de `user_api_scopes` (la API lo rechaza con `400 INVALID_PARAMETER_VALUE`) -- ese nombre corresponde a otra capa (el scope OAuth de un cliente MCP externo conectándose a un servidor MCP gestionado, no al token que Databricks Apps reenvía). No se identificó un scope de Apps dedicado para el MCP de UC Functions; con `main.default` sin funciones registradas aún, esto no está bloqueando hoy, pero verifícalo si registras funciones y el MCP de `uc-functions` no las lista con la identidad del usuario.
@@ -275,7 +274,7 @@ por:
 ```python
 agent = await init_agent()  # usa sp_workspace_client (Service Principal) siempre
 ```
-y, si quieres que `genie_ask`/`generate_pdf_*` hagan lo mismo, cambia `get_user_workspace_client()` por `WorkspaceClient()` en `agent_server/tools/genie.py` y `pdf.py`.
+y, si quieres que los helpers de Genie / `generate_pdf_*` hagan lo mismo, cambia `get_user_workspace_client()` por `WorkspaceClient()` en `agent_server/tools/genie.py` y `pdf.py`.
 
 ---
 
@@ -325,10 +324,10 @@ Portadas como *agent code tools* (ver `AGENTS.md` → "Agent Code Tools") desde 
 | :--- | :--- | :--- | :--- |
 | `current_time.py` | `get_current_time` | — | — |
 | `charts.py` | `generate_chart` | — (sin llamadas a Databricks) | — |
-| `genie.py` | `genie_ask` | Usuario (on-behalf-of, fallback a Service Principal) | Scope `genie` en `user_api_scopes` |
+| `genie.py` | *(sin tools expuestas; helpers reutilizados por `pdf.py`)* | Usuario (on-behalf-of, fallback a Service Principal) | Scope `genie` en `user_api_scopes` |
 | `pdf.py` | `generate_pdf_to_volume`, `generate_pdf_from_genie` | Usuario (on-behalf-of, fallback a Service Principal) | `PDF_TARGET_VOLUME` + scope `files` en `user_api_scopes` + permiso `WRITE_VOLUME` (SP, fallback) |
-| `mail.py` | `send_email` | — (HTTP directo a la Logic App) | `LOGIC_APP_MAIL_URL` (secreto) |
-| `jobs.py` | `databricks_jobs_list_jobs`, `databricks_jobs_run_job`, `databricks_jobs_get_run_status`, `databricks_jobs_run_job_and_wait`, `databricks_jobs_cancel_run` | Siempre Service Principal (sin OBO -- ver [Gestión de Permisos](#-gestión-de-permisos-on-behalf-of-user-por-defecto-y-service-principal-fallback)) | Permiso sobre el/los job(s) concretos (fuera del bundle, vía permisos de Job en UC/Workspace) |
+| `mail.py` | *(sin tool expuesta)* | — | — |
+| `jobs.py` | `send_email_via_job`, `databricks_jobs_list_jobs`, `databricks_jobs_run_job`, `databricks_jobs_get_run_status`, `databricks_jobs_run_job_and_wait`, `databricks_jobs_cancel_run` | Siempre Service Principal (sin OBO -- ver [Gestión de Permisos](#-gestión-de-permisos-on-behalf-of-user-por-defecto-y-service-principal-fallback)) | Permiso sobre el job de correo `1043398432719286` y cualquier otro job que quieras ejecutar |
 | `common.py` | `health`, `get_current_user` | `get_current_user` usa el usuario (on-behalf-of, vía `x-forwarded-access-token`) | — |
 | `volumes.py` | *(sin tools; helpers usados por `pdf.py`)* | — | — |
 
@@ -358,8 +357,8 @@ Las Databricks Apps requieren autenticación **OAuth Bearer Token** (los tokens 
 databricks auth token
 ```
 
-### 4. `send_email` / `generate_pdf_to_volume` devuelven un error de configuración
-Es el comportamiento esperado hasta que configures `LOGIC_APP_MAIL_URL` (correo) o `PDF_TARGET_VOLUME` + permiso `WRITE_VOLUME` (PDF). Ver [Herramientas Locales](#-herramientas-locales-agent_servertools) y el docstring de `agent_server/tools/mail.py` para la guía de configuración de la Logic App.
+### 4. `send_email_via_job` / `generate_pdf_to_volume` devuelven un error de configuración o permisos
+Para correo, verifica que el Service Principal de la app tenga permiso de ejecución sobre el job `1043398432719286`. Para PDF, revisa `PDF_TARGET_VOLUME` + permiso `WRITE_VOLUME`. Ver [Herramientas Locales](#-herramientas-locales-agent_servertools).
 
 ### 5. El agente usa permisos del Service Principal en vez de los del usuario
 Comportamiento esperado si aún no se aprobó la autorización de la app: on-behalf-of-user (ver [Gestión de Permisos](#-gestión-de-permisos-on-behalf-of-user-por-defecto-y-service-principal-fallback)) requiere que un admin del workspace apruebe los `user_api_scopes` solicitados una vez, en **Databricks Apps → `agent-langgraph` → Authorization**. Hasta entonces, `get_user_workspace_client()` no tiene un token de usuario válido y las tools caen al Service Principal automáticamente (sin fallar).

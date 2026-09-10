@@ -15,6 +15,7 @@ different tool calls.
 """
 
 import logging
+import os
 from datetime import timedelta
 
 from databricks.sdk import WorkspaceClient
@@ -25,6 +26,18 @@ from agent_server.utils import get_user_workspace_client
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 120
+DEFAULT_GENIE_SPACE_ID = os.environ.get(
+    "DEFAULT_GENIE_SPACE_ID", "01f14fd31b731643881aa99b62170b4a"
+).strip()
+
+
+def resolve_space_id(space_id: str = "") -> str:
+    resolved_space_id = space_id.strip() if space_id and space_id.strip() else DEFAULT_GENIE_SPACE_ID
+    if not resolved_space_id:
+        raise ValueError(
+            "No hay un Genie Space configurado. Define DEFAULT_GENIE_SPACE_ID o proporciona 'space_id'."
+        )
+    return resolved_space_id
 
 
 def start_conversation(
@@ -122,14 +135,15 @@ def extract_message_content(
 
 def ask_genie(
     w: WorkspaceClient,
-    space_id: str,
     question: str,
+    space_id: str = "",
     conversation_id: str = "",
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     include_query_results: bool = True,
 ) -> dict:
     """High-level helper: asks Genie a question (new or follow-up conversation)
     and returns the already-extracted response. See extract_message_content()."""
+    space_id = resolve_space_id(space_id)
     if conversation_id:
         message = send_message(w, space_id, conversation_id, question, timeout_seconds)
     else:
@@ -154,8 +168,8 @@ def genie_response_to_pdf_content(genie_answer: dict) -> str:
 
 @tool
 def genie_ask(
-    space_id: str,
     question: str,
+    space_id: str = "",
     conversation_id: str = "",
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     include_query_results: bool = True,
@@ -169,7 +183,7 @@ def genie_ask(
     call-time rather than a pre-configured one.
 
     Args:
-        space_id: Genie Space identifier (visible in the space's URL).
+        space_id: Genie Space identifier (visible in the space's URL). If omitted, uses DEFAULT_GENIE_SPACE_ID.
         question: Natural-language question for Genie.
         conversation_id: If given, continues that conversation instead of starting a new one.
         timeout_seconds: Max time to wait for Genie to finish responding.

@@ -8,8 +8,8 @@ resources:
       description: "LangGraph agent application"
       source_code_path: ./
       # On-behalf-of-user auth (see agent_server/agent.py: stream_handler).
-      # Every MCP call and every local tool touching Unity Catalog (genie_ask,
-      # generate_pdf_to_volume/_from_genie) runs with the calling user's
+      # Every MCP call and every local tool touching Unity Catalog
+      # (generate_pdf_to_volume/_from_genie) runs with the calling user's
       # permissions using these scopes -- NOT the service principal's.
       # [Public Preview] Requires a workspace admin to approve the app's
       # requested scopes once (Databricks Apps -> this app -> Authorization)
@@ -35,19 +35,25 @@ resources:
             value: "300"
           - name: MLFLOW_EXPERIMENT_ID
             value_from: "experiment"
+          - name: MODEL_ENDPOINT
+            value: "https://adb-2339714903823198.18.azuredatabricks.net/serving-endpoints/databricks-claude-haiku-4-5/invocations"
+          - name: MODEL_MAX_TOKENS
+            value: "800"
+          - name: DEFAULT_GENIE_SPACE_ID
+            value: "01f14fd31b731643881aa99b62170b4a"
           - name: GENIE_SPACE_IDS
             value: "01f14fd31b731643881aa99b62170b4a"
+          - name: EMAIL_DELIVERY_JOB_ID
+            value: "1043398432719286"
           # Default Unity Catalog volume for generate_pdf_to_volume /
           # generate_pdf_from_genie (agent_server/tools/pdf.py). Calls that
           # pass their own target_volume/volume_path/catalog+schema+volume
           # still override this.
           - name: PDF_TARGET_VOLUME
             value: "/Volumes/slv_dev/star_generico/test_mcp"
-          # Logic App mail (agent_server/tools/mail.py) is disabled until
-          # this is set -- see the setup guide in that file's docstring.
-          # Prefer a Databricks secret over a literal value here:
-          #   - name: LOGIC_APP_MAIL_URL
-          #     value_from: "logic_app_mail_url"  # -> secrets block, not shown
+          # Email delivery is handled by the Databricks job referenced in
+          # EMAIL_DELIVERY_JOB_ID. Grant the app's service principal
+          # permission on that job directly in the workspace.
 
       # Resources which this app has access to
       resources:

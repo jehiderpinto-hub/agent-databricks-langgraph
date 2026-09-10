@@ -3,11 +3,8 @@
 - `current_time`: trivial date/time tool.
 - `charts`: chart generation (generate_chart) + the in-memory PNG cache served
   by the GET /invocations?chart_id=... route in start_server.py.
-- `genie`: direct Genie conversations API access (genie_ask) -- a code-tool
-  alternative/complement to the managed Genie MCP server wired in agent.py.
-- `jobs`: Databricks Jobs execution and monitoring.
-- `mail`: email notifications via an Azure Logic App (disabled until
-  LOGIC_APP_MAIL_URL is configured -- see agent_server/tools/mail.py).
+- `genie`: direct Genie conversations helpers reused internally by pdf.py.
+- `jobs`: Databricks Jobs execution, monitoring, and email delivery pipeline trigger.
 - `pdf`: PDF report generation, optionally sourced from a Genie answer, saved
   to a Unity Catalog volume.
 - `volumes`: generic Unity Catalog Volumes upload helpers, used by `pdf`.
@@ -25,15 +22,14 @@ system.ai).
 from agent_server.tools.charts import generate_chart, get_cached_chart
 from agent_server.tools.common import get_current_user, health
 from agent_server.tools.current_time import get_current_time
-from agent_server.tools.genie import genie_ask
 from agent_server.tools.jobs import (
     databricks_jobs_cancel_run,
     databricks_jobs_get_run_status,
     databricks_jobs_list_jobs,
     databricks_jobs_run_job,
     databricks_jobs_run_job_and_wait,
+    send_email_via_job,
 )
-from agent_server.tools.mail import send_email
 from agent_server.tools.pdf import generate_pdf_from_genie, generate_pdf_to_volume
 
 ALL_LOCAL_TOOLS = [
@@ -41,8 +37,7 @@ ALL_LOCAL_TOOLS = [
     generate_chart,
     health,
     get_current_user,
-    genie_ask,
-    send_email,
+    send_email_via_job,
     generate_pdf_to_volume,
     generate_pdf_from_genie,
     databricks_jobs_list_jobs,
@@ -59,8 +54,7 @@ __all__ = [
     "generate_chart",
     "health",
     "get_current_user",
-    "genie_ask",
-    "send_email",
+    "send_email_via_job",
     "generate_pdf_to_volume",
     "generate_pdf_from_genie",
     "databricks_jobs_list_jobs",

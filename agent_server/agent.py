@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 import mlflow
 from databricks.sdk import WorkspaceClient
@@ -30,19 +30,28 @@ AGENT_INSTRUCTIONS = """Eres un asistente inteligente y analista de datos expert
 # REGLAS ESTRICTAS DE RESPUESTA Y FORMATO:
 1. **NUNCA muestres JSON crudo, payloads técnicos ni metadatos de ejecución en el chat:**
    - Queda estrictamente prohibido responder con salidas directas como `{"query": "SHOW CATALOGS"} Result [{"type": "text", ...}]` o estructuras con `statement_id`, `status`, `manifest`, `data_array`, `run_id`, `life_cycle_state` u otros campos técnicos crudos.
-   - Esto aplica a TODAS las herramientas (SQL, UC Functions, MCPs, Genie, Jobs, PDF, correo, etc.): siempre procesa, limpia e interpreta internamente sus resultados (incluyendo los dicts con `status`/`message` que devuelven las tools de Jobs, PDF y correo) antes de responder en lenguaje natural.
+   - Esto aplica a TODAS las herramientas (SQL, UC Functions, MCPs, Genie, Jobs, PDF y correo): siempre procesa, limpia e interpreta internamente sus resultados (incluyendo los dicts con `status`/`message` que devuelven las tools de Jobs y PDF) antes de responder en lenguaje natural.
 
 2. **Presentación Clara y Profesional (en Español):**
    - Presenta los datos de forma legible usando tablas Markdown bien estructuradas, listas con viñetas o resúmenes ejecutivos.
    - Explica de forma concisa los hallazgos y el contexto de los datos solicitados.
 
 3. **Visualizaciones y Gráficas:**
-   - Cuando el usuario solicite analizar tendencias, comparaciones, distribuciones, métricas o visualizaciones, o cuando una gráfica aporte claridad al análisis de datos numéricos o categóricos, utiliza SIEMPRE la herramienta `generate_chart`.
-   - Selecciona el tipo de gráfica más adecuado (`bar`, `horizontal_bar`, `line`, `pie`, `donut`, `area`, `scatter`, `histogram`).
-   - `generate_chart` devuelve una línea markdown como `![título](/invocations?chart_id=...)`. Debes incluir esa línea EXACTAMENTE como la devolvió la herramienta, sin modificarla, al inicio de tu respuesta -- de lo contrario la gráfica no se renderiza en el chat.
-   - Acompaña siempre la gráfica generada con un breve análisis o conclusiones clave después de la línea de imagen.
+   - Usa `generate_chart` SOLO cuando el usuario pida explícitamente una gráfica, chart, visualización o plot.
+   - Si el usuario no la pide explícitamente, responde con texto y/o tablas Markdown, aunque una gráfica pudiera ser útil.
+   - Cuando sí generes una gráfica, selecciona el tipo más adecuado (`bar`, `horizontal_bar`, `line`, `pie`, `donut`, `area`, `scatter`, `histogram`).
+   - `generate_chart` devuelve una línea markdown como `![título](/invocations?chart_id=...)`. Debes incluir esa línea EXACTAMENTE como la devolvió la herramienta, sin modificarla, al inicio de tu respuesta.
+   - Después de la línea de imagen, agrega un breve análisis o conclusiones clave.
 
-4. **Otras herramientas disponibles:** además de SQL/UC Functions/Genie (MCP) y `generate_chart`, tienes `genie_ask` (Genie por API directa), `send_email` (correo vía Logic App), `generate_pdf_to_volume` / `generate_pdf_from_genie` (reportes PDF a un volumen de Unity Catalog) y las tools `databricks_jobs_*` (listar, ejecutar, monitorear y cancelar Jobs). Úsalas cuando la solicitud del usuario lo requiera explícitamente (ej. "envíame esto por correo", "genera un PDF con esto", "ejecuta el job X"), y resume siempre su resultado en lenguaje natural.
+4. **Genie como primera opción para preguntas de negocio/datos curados:**
+   - Asume que ya existe y está disponible el Genie Space por defecto `01f14fd31b731643881aa99b62170b4a`.
+   - Cuando la pregunta del usuario sea del tipo que Genie puede responder, usa primero la tool de Genie ya configurada para ese espacio antes de intentar resolverlo con SQL libre u otras tools.
+
+5. **Correo y automatizaciones:**
+   - Si el usuario pide enviar un correo, usa `send_email_via_job`.
+   - `send_email_via_job` ejecuta el pipeline/job fijo `1043398432719286` y construye internamente el parámetro `email_payload`; no inventes otros mecanismos de correo.
+
+6. **Otras herramientas disponibles:** además de SQL/UC Functions/Genie (MCP) y `generate_chart`, tienes `generate_pdf_to_volume` / `generate_pdf_from_genie` (reportes PDF a un volumen de Unity Catalog), `send_email_via_job` (correo vía Databricks Jobs) y las tools `databricks_jobs_*` (listar, ejecutar, monitorear y cancelar Jobs). Úsalas cuando la solicitud del usuario lo requiera explícitamente (ej. "envíame esto por correo", "genera un PDF con esto", "ejecuta el job X"), y resume siempre su resultado en lenguaje natural.
 """
 
 # ---------------------------------------------------------------------------
@@ -64,6 +73,48 @@ mlflow.langchain.autolog()
 # Autologging emits a noisy "please pin your MLflow version" style warning on
 # every request at INFO/WARNING level; silence it so app logs stay readable.
 logging.getLogger("mlflow.utils.autologging_utils").setLevel(logging.ERROR)
+
+DEFAULT_GENIE_SPACE_ID = os.environ.get(
+    "DEFAULT_GENIE_SPACE_ID", "01f14fd31b731643881aa99b62170b4a"
+).strip()
+MODEL_ENDPOINT_RAW = os.environ.get(
+    "MODEL_ENDPOINT",
+    "https://adb-2339714903823198.18.azuredatabricks.net/serving-endpoints/databricks-claude-haiku-4-5/invocations",
+)
+_DEFAULT_MODEL_MAX_TOKENS = 800
+_SERVICE_PRINCIPAL_MCP_TOOLS: Optional[list[Any]] = None
+
+
+def _resolve_model_endpoint(endpoint_or_url: str) -> str:
+    endpoint_or_url = endpoint_or_url.strip()
+    if "/serving-endpoints/" not in endpoint_or_url:
+        return endpoint_or_url
+    endpoint_path = endpoint_or_url.split("/serving-endpoints/", 1)[1]
+    return endpoint_path.split("/", 1)[0]
+
+
+def _get_model_max_tokens() -> int:
+    raw_value = os.environ.get("MODEL_MAX_TOKENS", str(_DEFAULT_MODEL_MAX_TOKENS)).strip()
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid MODEL_MAX_TOKENS value '%s'. Falling back to %s.",
+            raw_value,
+            _DEFAULT_MODEL_MAX_TOKENS,
+        )
+        return _DEFAULT_MODEL_MAX_TOKENS
+    if value <= 0:
+        logger.warning(
+            "MODEL_MAX_TOKENS must be positive. Falling back to %s.",
+            _DEFAULT_MODEL_MAX_TOKENS,
+        )
+        return _DEFAULT_MODEL_MAX_TOKENS
+    return value
+
+
+MODEL_ENDPOINT = _resolve_model_endpoint(MODEL_ENDPOINT_RAW)
+MODEL_MAX_TOKENS = _get_model_max_tokens()
 
 # ---------------------------------------------------------------------------
 # Service-principal Databricks client
@@ -103,10 +154,13 @@ UC_FUNCTIONS_SCHEMA = os.environ.get("UC_FUNCTIONS_SCHEMA", "default")
 #   created yet). NOTE: the literal sentinel "unset" is used instead of an
 #   empty string because Databricks Apps silently drops any config.env entry
 #   whose resolved value is "" (see databricks.yml).
-_genie_space_ids_raw = os.environ.get("GENIE_SPACE_IDS", "unset")
-GENIE_SPACE_IDS = (
-    [] if _genie_space_ids_raw == "unset" else [s.strip() for s in _genie_space_ids_raw.split(",") if s.strip()]
+_genie_space_ids_raw = os.environ.get("GENIE_SPACE_IDS", "unset").strip()
+_configured_genie_space_ids = (
+    []
+    if _genie_space_ids_raw == "unset"
+    else [s.strip() for s in _genie_space_ids_raw.split(",") if s.strip()]
 )
+GENIE_SPACE_IDS = list(dict.fromkeys([DEFAULT_GENIE_SPACE_ID, *_configured_genie_space_ids]))
 
 
 def init_mcp_client(workspace_client: WorkspaceClient) -> DatabricksMultiServerMCPClient:
@@ -179,6 +233,19 @@ def init_mcp_client(workspace_client: WorkspaceClient) -> DatabricksMultiServerM
     return DatabricksMultiServerMCPClient(mcp_servers)
 
 
+async def _get_mcp_tools(workspace_client: WorkspaceClient, use_service_principal_cache: bool) -> list[Any]:
+    global _SERVICE_PRINCIPAL_MCP_TOOLS
+
+    if use_service_principal_cache and _SERVICE_PRINCIPAL_MCP_TOOLS is not None:
+        return list(_SERVICE_PRINCIPAL_MCP_TOOLS)
+
+    mcp_client = init_mcp_client(workspace_client)
+    tools = list(await mcp_client.get_tools())
+    if use_service_principal_cache:
+        _SERVICE_PRINCIPAL_MCP_TOOLS = list(tools)
+    return tools
+
+
 async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
     """Assemble the LangGraph agent: local tools + MCP tools + LLM.
 
@@ -195,9 +262,9 @@ async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
             logger.warning("Could not initialize WorkspaceClient for MCP tools.", exc_info=True)
 
     if ws_client:
-        mcp_client = init_mcp_client(ws_client)
+        use_service_principal_cache = workspace_client is None or ws_client is sp_workspace_client
         try:
-            tools.extend(await mcp_client.get_tools())
+            tools.extend(await _get_mcp_tools(ws_client, use_service_principal_cache))
         except Exception:
             logger.warning("Failed to fetch MCP tools. Continuing without MCP tools.", exc_info=True)
 
@@ -207,7 +274,9 @@ async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
         # model or a custom-served model) -- it must exist in the *target*
         # workspace; endpoint names are not shared across workspaces.
         model=ChatDatabricks(
-            endpoint="databricks-claude-sonnet-5",
+            endpoint=MODEL_ENDPOINT,
+            temperature=0,
+            max_tokens=MODEL_MAX_TOKENS,
             # Claude's "extended thinking" is on by default for this
             # endpoint and returns reasoning blocks with an empty text
             # summary (only an opaque signature). The chat UI renders any

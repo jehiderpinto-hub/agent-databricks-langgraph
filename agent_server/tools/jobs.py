@@ -17,6 +17,8 @@ not via databricks.yml.
 """
 
 import logging
+import json
+import os
 import time
 
 from databricks.sdk import WorkspaceClient
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_WAIT_TIMEOUT_SECONDS = 300
 DEFAULT_POLL_INTERVAL_SECONDS = 5
+EMAIL_DELIVERY_JOB_ID = int(os.environ.get("EMAIL_DELIVERY_JOB_ID", "1043398432719286"))
 
 _TERMINAL_STATES = ("TERMINATED", "SKIPPED", "INTERNAL_ERROR")
 
@@ -119,6 +122,41 @@ def cancel_run(w: WorkspaceClient, run_id: int) -> None:
     w.jobs.cancel_run(run_id=run_id).result()
 
 
+def _build_email_payload(
+    to: str,
+    cc: str,
+    bcc: str,
+    subject: str,
+    body: str,
+    attachments: list | None,
+) -> dict:
+    if not to.strip():
+        raise ValueError("Debes proporcionar al menos un destinatario en 'to'.")
+    if not subject.strip():
+        raise ValueError("Debes proporcionar un 'subject' para el correo.")
+    if not body.strip():
+        raise ValueError("Debes proporcionar un 'body' para el correo.")
+
+    normalized_attachments = attachments or []
+    if not isinstance(normalized_attachments, list):
+        raise ValueError("'attachments' debe ser una lista.")
+
+    cleaned_attachments = []
+    for attachment in normalized_attachments:
+        if not isinstance(attachment, str) or not attachment.strip():
+            raise ValueError("Cada elemento de 'attachments' debe ser un string no vacío.")
+        cleaned_attachments.append(attachment.strip())
+
+    return {
+        "to": to.strip(),
+        "cc": cc.strip(),
+        "bcc": bcc.strip(),
+        "subject": subject.strip(),
+        "body": body.strip(),
+        "attachments": cleaned_attachments,
+    }
+
+
 @tool
 def databricks_jobs_list_jobs(name: str = "", limit: int = 20) -> dict:
     """Lists the Databricks jobs available in the workspace.
@@ -139,6 +177,86 @@ def databricks_jobs_list_jobs(name: str = "", limit: int = 20) -> dict:
     except Exception as e:
         logger.exception("Error listing jobs")
         return {"status": "error", "error": str(e), "message": f"Error al listar jobs: {str(e)}"}
+
+
+@tool
+def send_email_via_job(
+    to: str,
+    subject: str,
+    body: str,
+    cc: str = "",
+    bcc: str = "",
+    attachments: list = None,
+    wait_for_completion: bool = False,
+    timeout_seconds: int = DEFAULT_WAIT_TIMEOUT_SECONDS,
+) -> dict:
+    """Queues an email delivery by running the Databricks job configured for outbound mail.
+
+    The job receives one parameter named `email_payload` with this JSON shape:
+    {"to": "", "cc": "", "bcc": "", "subject": "", "body": "", "attachments": []}
+    """
+    try:
+        payload = _build_email_payload(
+            to=to,
+            cc=cc,
+            bcc=bcc,
+            subject=subject,
+            body=body,
+            attachments=attachments,
+        )
+        job_parameters = {"email_payload": json.dumps(payload, ensure_ascii=False)}
+        w = WorkspaceClient()
+
+        if wait_for_completion:
+            result = run_job_and_wait(
+                w,
+                job_id=EMAIL_DELIVERY_JOB_ID,
+                job_parameters=job_parameters,
+                timeout_seconds=timeout_seconds,
+            )
+            result["job_id"] = EMAIL_DELIVERY_JOB_ID
+            run_id = result["run"]["run_id"]
+            if result["status"] == "timeout":
+                result["message"] = (
+                    f"El pipeline de correo {EMAIL_DELIVERY_JOB_ID} se disparó (run_id={run_id}) "
+                    f"pero no terminó dentro de {timeout_seconds}s."
+                )
+            elif result["status"] == "success":
+                result["message"] = (
+                    f"El pipeline de correo {EMAIL_DELIVERY_JOB_ID} finalizó correctamente "
+                    f"(run_id={run_id})."
+                )
+            else:
+                result["message"] = (
+                    f"El pipeline de correo {EMAIL_DELIVERY_JOB_ID} terminó con estado "
+                    f"{result['run']['result_state']} (run_id={run_id})."
+                )
+            return result
+
+        run = run_job(
+            w,
+            job_id=EMAIL_DELIVERY_JOB_ID,
+            job_parameters=job_parameters,
+        )
+        return {
+            "status": "success",
+            "job_id": EMAIL_DELIVERY_JOB_ID,
+            "run_id": run.run_id,
+            "run_page_url": run.run_page_url,
+            "message": (
+                f"Solicitud de correo enviada al pipeline {EMAIL_DELIVERY_JOB_ID} "
+                f"(run_id={run.run_id})."
+            ),
+        }
+    except ValueError as e:
+        return {"status": "error", "error": str(e), "message": str(e)}
+    except Exception as e:
+        logger.exception("Error queuing email delivery job")
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": f"Error al ejecutar el pipeline de correo {EMAIL_DELIVERY_JOB_ID}: {str(e)}",
+        }
 
 
 @tool

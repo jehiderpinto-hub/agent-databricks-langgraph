@@ -23,7 +23,7 @@ dependencies = [
     "matplotlib>=3.9.0",
     "pandas>=2.2.0",
     "numpy>=1.26.0",
-    # Used directly by agent_server/tools/{mail,volumes}.py.
+    # Used directly by agent_server/tools/volumes.py.
     "requests>=2.31.0",
     # Used by agent_server/tools/pdf.py (build_pdf_bytes); falls back to a
     # dependency-free minimal PDF generator if unavailable.
